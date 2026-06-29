@@ -228,7 +228,7 @@
   - аккаунт/владелец: `mivroniosergiu-eng`; `gh` CLI уже авторизован (scopes `repo`, `workflow`, `read:org`), токен — в keyring, не в репо;
   - подробности и git-конвенции — в `README.md` → раздел «Репозиторий и git-доступ».
 - **Git-workflow:** ветки `feat/*` `fix/*` `docs/*` `chore/*`; в `main` — только через PR; коммиты по Conventional Commits.
-- **Защита `main`: АКТИВНА** (серверный branch-protection): push только через PR, обязательный зелёный чек `quality-gate` (strict), ≥1 approve со сбросом устаревших ревью, linear history, запрет force-push/удаления, enforce_admins, разрешение тредов. **Прямой push в `main` невозможен — работать только через ветку + PR.**
+- **Защита `main`: АКТИВНА** (серверный branch-protection): **прямой push запрещён — только через ветку + PR** (enforce_admins), linear history, запрет force-push/удаления, обязательное разрешение тредов. **CI-чек `quality-gate` станет required в Фазе 0** при активации `.github/workflows/ci.yml` (сейчас не выставлен, иначе PR нельзя слить — это последовательность, не послабление). Approve пока не требуется (соло-аккаунт).
 - **Секреты:** включены GitHub secret scanning + push protection (push с ключом блокируется сервером). Никогда не коммитить `.env*`, `auth_info*/`, `wa-sessions/`, `*.session`.
 - Держать diff'ы сфокусированными. Избегать unrelated formatting churn.
 
