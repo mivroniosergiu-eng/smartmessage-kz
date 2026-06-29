@@ -1,0 +1,30 @@
+# DRAFT / SPEC — НЕ активный workflow. Активируется в Фазе 0, когда появятся git-репо, GitHub-remote и pnpm.
+# До этого момента файл — только спецификация защитного контура (одобрено владельцем, см. AGENTS.md §12).
+name: CI Quality Gate
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+      # Anti-weakening: запрет на ослабление тестов в диффе
+      - name: No test weakening
+        run: |
+          if git diff origin/main...HEAD -- '*.test.ts' '*.spec.ts' | grep -E '^\+.*(\.skip\(|\.only\(|\bxit\()'; then
+            echo "::error::Запрещено глушить или ослаблять тесты через .skip, .only или xit. Чините код."
+            exit 1
+          fi

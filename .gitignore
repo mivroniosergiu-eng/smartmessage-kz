@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Baileys / WA auth state
+auth_info*/
+wa-sessions/
+*.session
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Prisma generated
+prisma/generated/
+
+# Misc
+*.tsbuildinfo
+.turbo/
