@@ -223,6 +223,12 @@
 - Не ослаблять auth, permissions, validation, шифрование, rate limits, auditability ради облегчения задачи.
 - Не редактировать вручную сгенерированные файлы (`prisma client`, `.next`, `dist`). Обновлять источник и запускать генератор.
 - Не stage/commit/amend/rebase/reset/stash/push/delete без явной просьбы.
+- **Репозиторий проекта (источник истины по git):**
+  - origin: `https://github.com/mivroniosergiu-eng/smartmessage-kz` (Private 🔒), ветка по умолчанию `main`;
+  - аккаунт/владелец: `mivroniosergiu-eng`; `gh` CLI уже авторизован (scopes `repo`, `workflow`, `read:org`), токен — в keyring, не в репо;
+  - подробности и git-конвенции — в `README.md` → раздел «Репозиторий и git-доступ».
+- **Git-workflow:** ветки `feat/*` `fix/*` `docs/*` `chore/*`; в `main` — только через PR; коммиты по Conventional Commits.
+- **Защита `main`:** серверный branch-protection/ruleset требует GitHub Pro для приватного репо — **пока не активирован**; до включения барьер = локальный Husky pre-push + CI quality-gate (`.github/workflows/ci.yml`). При появлении Pro либо переводе репо в public — активировать защиту (required check `quality-gate`, PR-review, linear history, запрет force-push/деления).
 - Держать diff'ы сфокусированными. Избегать unrelated formatting churn.
 
 ---

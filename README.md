@@ -4,6 +4,20 @@ B2B SaaS сквозной экосистемы: ИИ-таргет → CRM + ча
 
 > ⚠️ Этот README — **карта и точка входа**, а не инвентарь файлов. Структуру репозитория открывать динамически (см. `AGENTS.md` §2).
 
+
+## Репозиторий и git-доступ
+- **Remote (origin):** `https://github.com/mivroniosergiu-eng/smartmessage-kz`
+- **Владелец / аккаунт:** `mivroniosergiu-eng` (GitHub).
+- **Видимость:** Private 🔒
+- **Ветка по умолчанию:** `main`.
+- **Авторизация:** GitHub CLI (`gh`) уже залогинен под этим аккаунтом (scopes: `repo`, `workflow`, `read:org`). Токен — в системном keyring, не в репозитории.
+- **Git-конвенции:**
+  - работать через ветки `feat/*`, `fix/*`, `docs/*`, `chore/*`; вливать в `main` только через Pull Request;
+  - коммиты — Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`);
+  - **никогда** не коммитить секреты и WA-сессии — см. `.gitignore` (`.env*`, `auth_info*/`, `wa-sessions/`, `*.session`); шаблон переменных — `.env.example`;
+  - переводы строк нормализованы через `.gitattributes` (`eol=lf`).
+- **Защита ветки `main`:** серверный branch-protection/ruleset требует GitHub Pro для приватного репо — **пока не активирован**. До его включения барьер обеспечивают локальный pre-push хук (Husky) + CI quality-gate (`.github/workflows/ci.yml`). См. `AGENTS.md` §12 и ROADMAP, Фаза 0.
+
 ## С чего начать (порядок чтения)
 1. `first plan.md` — бизнес-контекст (что строим и зачем).
 2. `AGENTS.md` — **обязательные правила** (стек, TDD-гейты, безопасность, стоп-факторы). Исполняются всегда.
