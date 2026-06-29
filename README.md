@@ -8,7 +8,7 @@ B2B SaaS сквозной экосистемы: ИИ-таргет → CRM + ча
 ## Репозиторий и git-доступ
 - **Remote (origin):** `https://github.com/mivroniosergiu-eng/smartmessage-kz`
 - **Владелец / аккаунт:** `mivroniosergiu-eng` (GitHub).
-- **Видимость:** Private 🔒
+- **Видимость:** Public 🌍 (исходники открыты; секреты — никогда в репо, см. ниже).
 - **Ветка по умолчанию:** `main`.
 - **Авторизация:** GitHub CLI (`gh`) уже залогинен под этим аккаунтом (scopes: `repo`, `workflow`, `read:org`). Токен — в системном keyring, не в репозитории.
 - **Git-конвенции:**
@@ -16,7 +16,13 @@ B2B SaaS сквозной экосистемы: ИИ-таргет → CRM + ча
   - коммиты — Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`);
   - **никогда** не коммитить секреты и WA-сессии — см. `.gitignore` (`.env*`, `auth_info*/`, `wa-sessions/`, `*.session`); шаблон переменных — `.env.example`;
   - переводы строк нормализованы через `.gitattributes` (`eol=lf`).
-- **Защита ветки `main`:** серверный branch-protection/ruleset требует GitHub Pro для приватного репо — **пока не активирован**. До его включения барьер обеспечивают локальный pre-push хук (Husky) + CI quality-gate (`.github/workflows/ci.yml`). См. `AGENTS.md` §12 и ROADMAP, Фаза 0.
+- **Защита ветки `main`: АКТИВНА** (серверный branch-protection GitHub):
+  - прямой push в `main` запрещён — только через Pull Request;
+  - merge невозможен без зелёного CI-чека `quality-gate` (strict, ветка должна быть актуальной);
+  - требуется ≥1 approve, устаревшие ревью сбрасываются при новом push;
+  - linear history (rebase/squash), force-push и удаление `main` запрещены;
+  - правила распространяются и на админов (enforce_admins); обязательное разрешение всех тредов в PR.
+- **Защита от утечки секретов: АКТИВНА** — GitHub secret scanning + push protection (push с обнаруженным ключом блокируется на сервере). Плюс локально `.gitignore` (`.env*`, `auth_info*/`, `wa-sessions/`, `*.session`).
 
 ## С чего начать (порядок чтения)
 1. `first plan.md` — бизнес-контекст (что строим и зачем).

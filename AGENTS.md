@@ -224,11 +224,12 @@
 - Не редактировать вручную сгенерированные файлы (`prisma client`, `.next`, `dist`). Обновлять источник и запускать генератор.
 - Не stage/commit/amend/rebase/reset/stash/push/delete без явной просьбы.
 - **Репозиторий проекта (источник истины по git):**
-  - origin: `https://github.com/mivroniosergiu-eng/smartmessage-kz` (Private 🔒), ветка по умолчанию `main`;
+  - origin: `https://github.com/mivroniosergiu-eng/smartmessage-kz` (Public 🌍), ветка по умолчанию `main`;
   - аккаунт/владелец: `mivroniosergiu-eng`; `gh` CLI уже авторизован (scopes `repo`, `workflow`, `read:org`), токен — в keyring, не в репо;
   - подробности и git-конвенции — в `README.md` → раздел «Репозиторий и git-доступ».
 - **Git-workflow:** ветки `feat/*` `fix/*` `docs/*` `chore/*`; в `main` — только через PR; коммиты по Conventional Commits.
-- **Защита `main`:** серверный branch-protection/ruleset требует GitHub Pro для приватного репо — **пока не активирован**; до включения барьер = локальный Husky pre-push + CI quality-gate (`.github/workflows/ci.yml`). При появлении Pro либо переводе репо в public — активировать защиту (required check `quality-gate`, PR-review, linear history, запрет force-push/деления).
+- **Защита `main`: АКТИВНА** (серверный branch-protection): push только через PR, обязательный зелёный чек `quality-gate` (strict), ≥1 approve со сбросом устаревших ревью, linear history, запрет force-push/удаления, enforce_admins, разрешение тредов. **Прямой push в `main` невозможен — работать только через ветку + PR.**
+- **Секреты:** включены GitHub secret scanning + push protection (push с ключом блокируется сервером). Никогда не коммитить `.env*`, `auth_info*/`, `wa-sessions/`, `*.session`.
 - Держать diff'ы сфокусированными. Избегать unrelated formatting churn.
 
 ---
