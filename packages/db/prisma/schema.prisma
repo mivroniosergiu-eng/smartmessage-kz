@@ -1,0 +1,100 @@
+// Источник истины доменной модели Smartmessage.kz. Единственный владелец Prisma schema.
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Авто-ERD при каждой генерации/миграции (output .md = mermaid без headless-браузера).
+generator erd {
+  provider = "prisma-erd-generator"
+  output   = "../ERD.md"
+}
+
+model Team {
+  id           String        @id @default(cuid())
+  name         String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  users        User[]
+  leads        Lead[]
+  subscription Subscription?
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(OWNER)
+  teamId       String
+  team         Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@index([teamId])
+}
+
+enum ConsentStatus {
+  UNKNOWN
+  OPTED_IN
+  OPTED_OUT
+}
+
+model Lead {
+  id            String        @id @default(cuid())
+  teamId        String
+  team          Team          @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  phone         String
+  name          String?
+  // Атрибуция / UTM — first-class поля
+  utmSource     String?
+  utmMedium     String?
+  utmCampaign   String?
+  creativeId    String?
+  costPerLead   Decimal?      @db.Decimal(10, 2)
+  // Согласие / opt-out — с Фазы 0 (юр. требование + смягчение банов)
+  consentStatus ConsentStatus @default(UNKNOWN)
+  consentAt     DateTime?
+  optedOutAt    DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([teamId, phone])
+  @@index([teamId])
+}
+
+enum Tier {
+  STARTER
+  GROWTH
+  SCALE
+}
+
+enum SubStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+model Subscription {
+  id                 String    @id @default(cuid())
+  teamId             String    @unique
+  team               Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  tier               Tier      @default(STARTER)
+  status             SubStatus @default(TRIALING)
+  // Биллинг через Merchant of Record (ADR-0002): провайдер-нейтральные имена
+  paymentProvider    String
+  providerSubId      String?   @unique
+  providerCustomerId String?
+  currentPeriodEnd   DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
