@@ -7,6 +7,28 @@ on:
 jobs:
   quality-gate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: smartmessage
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5433/smartmessage?schema=public
+      REDIS_URL: redis://localhost:6380
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,6 +39,8 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @smartmessage/db exec prisma generate
+      - run: pnpm --filter @smartmessage/db exec prisma migrate deploy
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test:cov

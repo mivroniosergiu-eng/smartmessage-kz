@@ -28,6 +28,7 @@
     "prisma-erd-generator": "^1.11.2",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "dotenv": "^16.4.5"
   }
 }
