@@ -23,6 +23,12 @@ importers:
 
   apps/web:
     dependencies:
+      '@smartmessage/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@smartmessage/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       next:
         specifier: ^14.2.15
         version: 14.2.35(@babel/core@7.29.7)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -32,6 +38,9 @@ importers:
       react-dom:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@testing-library/jest-dom':
         specifier: ^6.5.0

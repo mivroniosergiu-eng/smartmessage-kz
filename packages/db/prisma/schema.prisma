@@ -22,6 +22,10 @@ model Team {
   users        User[]
   leads        Lead[]
   subscription Subscription?
+  waAccounts   WaAccount[]
+  campaigns    Campaign[]
+  stats        Stats?
+  permissions  Permissions?
 }
 
 enum Role {
@@ -97,4 +101,139 @@ model Subscription {
   currentPeriodEnd   DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
+}
+
+enum WaLoginType {
+  BAILEYS
+  CLOUD_API
+  EVOLUTION
+}
+
+enum WaAccountStatus {
+  CONNECTING
+  CONNECTED
+  DISCONNECTED
+  LOGGED_OUT
+  RESTRICTED
+  BANNED
+}
+
+model WaAccount {
+  id              String          @id @default(cuid())
+  teamId          String
+  team            Team            @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  instanceId      String          @unique
+  loginType       WaLoginType     @default(BAILEYS)
+  status          WaAccountStatus @default(DISCONNECTED)
+  pid             Int?
+  restrictedUntil DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([teamId])
+}
+
+model WaSession {
+  id         String   @id @default(cuid())
+  instanceId String   @unique
+  teamId     String
+  status     String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([teamId])
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  FAILED
+}
+
+model Campaign {
+  id              String         @id @default(cuid())
+  teamId          String
+  team            Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  status          CampaignStatus @default(DRAFT)
+  timePost        DateTime?
+  run             String?        // lease ref
+  accounts        Json           // JSON list of account ids
+  nextAccount     String?
+  scheduleTime    Json           // JSON hours
+  timezone        String         @default("UTC")
+  minDelay        Int            @default(2000)
+  maxDelay        Int            @default(5000)
+  sent            Int            @default(0)
+  failed          Int            @default(0)
+  technicalFailed Int            @default(0)
+  result          Json?          // JSON status map per number
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([teamId])
+}
+
+enum MessageLogStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum MessageErrorType {
+  MEDIA_ERROR
+  SESSION_ERROR
+  SEND_ERROR
+}
+
+model MessageLog {
+  id         String           @id @default(cuid())
+  instanceId String
+  teamId     String
+  phone      String
+  type       String
+  message    String
+  status     MessageLogStatus @default(QUEUED)
+  errorType  MessageErrorType?
+  timePost   DateTime         @default(now())
+
+  @@index([teamId])
+  @@index([instanceId])
+}
+
+model Stats {
+  id                 String   @id @default(cuid())
+  teamId             String   @unique
+  team               Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  waTotalSent        Int      @default(0)
+  waTotalSentByMonth Int      @default(0)
+  waTimeReset        DateTime @default(now())
+  bulkTotal          Int      @default(0)
+  bulkSent           Int      @default(0)
+  bulkFailed         Int      @default(0)
+}
+
+model Permissions {
+  id                       String   @id @default(cuid())
+  teamId                   String   @unique
+  team                     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  tier                     Tier     @default(STARTER)
+  monthlyBroadcastMessages Int      @default(10000)
+  monthlyAiGenerations     Int      @default(500)
+  maxWhatsappAccounts      Int      @default(1)
+  updatedAt                DateTime @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  teamId    String
+  userId    String?
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+
+  @@index([teamId])
 }
