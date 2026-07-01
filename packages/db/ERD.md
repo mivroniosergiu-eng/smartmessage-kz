@@ -6,7 +6,7 @@ erDiagram
 ADMIN ADMIN
 MEMBER MEMBER
         }
-
+    
 
 
         ConsentStatus {
@@ -14,7 +14,7 @@ MEMBER MEMBER
 OPTED_IN OPTED_IN
 OPTED_OUT OPTED_OUT
         }
-
+    
 
 
         LeadSource {
@@ -23,7 +23,7 @@ CHAT CHAT
 MANUAL MANUAL
 IMPORT IMPORT
         }
-
+    
 
 
         ContactWaStatus {
@@ -32,7 +32,7 @@ CONFIRMED CONFIRMED
 NOT_ON_WHATSAPP NOT_ON_WHATSAPP
 ERROR ERROR
         }
-
+    
 
 
         Tier {
@@ -40,7 +40,7 @@ ERROR ERROR
 GROWTH GROWTH
 SCALE SCALE
         }
-
+    
 
 
         SubStatus {
@@ -49,7 +49,7 @@ ACTIVE ACTIVE
 PAST_DUE PAST_DUE
 CANCELED CANCELED
         }
-
+    
 
 
         WaLoginType {
@@ -57,7 +57,7 @@ CANCELED CANCELED
 CLOUD_API CLOUD_API
 EVOLUTION EVOLUTION
         }
-
+    
 
 
         WaAccountStatus {
@@ -68,7 +68,7 @@ LOGGED_OUT LOGGED_OUT
 RESTRICTED RESTRICTED
 BANNED BANNED
         }
-
+    
 
 
         CampaignStatus {
@@ -78,7 +78,7 @@ PAUSED PAUSED
 COMPLETED COMPLETED
 FAILED FAILED
         }
-
+    
 
 
         MessageLogStatus {
@@ -88,7 +88,7 @@ DELIVERED DELIVERED
 READ READ
 FAILED FAILED
         }
-
+    
 
 
         MessageErrorType {
@@ -96,144 +96,144 @@ FAILED FAILED
 SESSION_ERROR SESSION_ERROR
 SEND_ERROR SEND_ERROR
         }
-
+    
   "Team" {
     String id "🗝️"
-    String name
-    DateTime createdAt
-    DateTime updatedAt
+    String name 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "User" {
     String id "🗝️"
-    String email
-    String passwordHash
-    Role role
-    DateTime createdAt
+    String email 
+    String passwordHash 
+    Role role 
+    DateTime createdAt 
     }
-
+  
 
   "Lead" {
     String id "🗝️"
-    String phone
+    String phone 
     String name "❓"
-    LeadSource source
+    LeadSource source 
     String utmSource "❓"
     String utmMedium "❓"
     String utmCampaign "❓"
     String creativeId "❓"
     Decimal costPerLead "❓"
-    ConsentStatus consentStatus
+    ConsentStatus consentStatus 
     DateTime consentAt "❓"
     DateTime optedOutAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "Contact" {
     String id "🗝️"
-    String phone
+    String phone 
     String name "❓"
     ContactWaStatus isValid "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "Subscription" {
     String id "🗝️"
-    Tier tier
-    SubStatus status
-    String paymentProvider
+    Tier tier 
+    SubStatus status 
+    String paymentProvider 
     String providerSubId "❓"
     String providerCustomerId "❓"
     DateTime currentPeriodEnd "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "WaAccount" {
     String id "🗝️"
-    String instanceId
-    WaLoginType loginType
-    WaAccountStatus status
+    String instanceId 
+    WaLoginType loginType 
+    WaAccountStatus status 
     Int pid "❓"
     DateTime restrictedUntil "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "WaSession" {
     String id "🗝️"
-    String status
-    DateTime createdAt
-    DateTime updatedAt
+    String status 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "Campaign" {
     String id "🗝️"
-    CampaignStatus status
+    CampaignStatus status 
     DateTime timePost "❓"
     String run "❓"
-    Json accounts
+    Json accounts 
     String nextAccount "❓"
-    Json scheduleTime
-    String timezone
-    Int minDelay
-    Int maxDelay
-    Int sent
-    Int failed
-    Int technicalFailed
+    Json scheduleTime 
+    String timezone 
+    Int minDelay 
+    Int maxDelay 
+    Int sent 
+    Int failed 
+    Int technicalFailed 
     Json result "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "MessageLog" {
     String id "🗝️"
-    String phone
-    String type
-    String message
-    MessageLogStatus status
+    String phone 
+    String type 
+    String message 
+    MessageLogStatus status 
     MessageErrorType errorType "❓"
-    DateTime timePost
+    DateTime timePost 
     }
-
+  
 
   "Stats" {
     String id "🗝️"
-    Int waTotalSent
-    Int waTotalSentByMonth
-    DateTime waTimeReset
-    Int bulkTotal
-    Int bulkSent
-    Int bulkFailed
+    Int waTotalSent 
+    Int waTotalSentByMonth 
+    DateTime waTimeReset 
+    Int bulkTotal 
+    Int bulkSent 
+    Int bulkFailed 
     }
-
+  
 
   "Permissions" {
     String id "🗝️"
-    Tier tier
-    Int monthlyBroadcastMessages
-    Int monthlyAiGenerations
-    Int maxWhatsappAccounts
-    DateTime updatedAt
+    Tier tier 
+    Int monthlyBroadcastMessages 
+    Int monthlyAiGenerations 
+    Int maxWhatsappAccounts 
+    DateTime updatedAt 
     }
-
+  
 
   "AuditLog" {
     String id "🗝️"
-    String action
+    String action 
     String details "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
     "Team" o{--}o "User" : "users"
     "Team" o{--}o "Lead" : "leads"
     "Team" o{--}o "Subscription" : "subscription"
