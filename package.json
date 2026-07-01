@@ -1,0 +1,35 @@
+{
+  "name": "smartmessage-kz",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "overrides": {
+      "ioredis": "5.11.1"
+    }
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:cov": "pnpm -r test:cov",
+    "test:e2e": "pnpm --filter @smartmessage/web test:e2e",
+    "lint": "eslint . && pnpm --filter @smartmessage/web lint",
+    "lint:fix": "eslint . --fix && pnpm --filter @smartmessage/web lint",
+    "format": "prettier --check .",
+    "dev": "pnpm -r --parallel dev",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "prettier": "^3.3.3",
+    "husky": "^9.1.6",
+    "eslint": "^9.15.0",
+    "@eslint/js": "^9.15.0",
+    "typescript-eslint": "^8.16.0",
+    "globals": "^15.12.0"
+  }
+}

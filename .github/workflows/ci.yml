@@ -1,5 +1,3 @@
-# DRAFT / SPEC — НЕ активный workflow. Активируется в Фазе 0, когда появятся git-репо, GitHub-remote и pnpm.
-# До этого момента файл — только спецификация защитного контура (одобрено владельцем, см. AGENTS.md §12).
 name: CI Quality Gate
 on:
   pull_request:
@@ -9,6 +7,28 @@ on:
 jobs:
   quality-gate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: smartmessage
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5433/smartmessage?schema=public
+      REDIS_URL: redis://localhost:6380
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,12 +39,21 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @smartmessage/db exec prisma generate
+      - run: pnpm --filter @smartmessage/db exec prisma migrate deploy
+      - run: pnpm lint
+      - run: pnpm typecheck
       - run: pnpm build
-      - run: pnpm test
-      # Anti-weakening: запрет на ослабление тестов в диффе
+      - run: pnpm test:cov
+      - run: pnpm --filter @smartmessage/web exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
       - name: No test weakening
+        if: github.event_name == 'pull_request'
         run: |
-          if git diff origin/main...HEAD -- '*.test.ts' '*.spec.ts' | grep -E '^\+.*(\.skip\(|\.only\(|\bxit\()'; then
-            echo "::error::Запрещено глушить или ослаблять тесты через .skip, .only или xit. Чините код."
+          if git diff origin/${{ github.base_ref }}...HEAD -- \
+            '*.test.ts' '*.spec.ts' '*.test.tsx' '*.spec.tsx' \
+            '*.test.js' '*.spec.js' '*.test.jsx' '*.spec.jsx' | \
+            grep -E '^\+.*(\.skip\(|\.only\(|\bxit\()'; then
+            echo "::error::Запрещено глушить/ослаблять тесты через .skip/.only/xit. Чините код."
             exit 1
           fi

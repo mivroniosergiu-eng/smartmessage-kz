@@ -1,0 +1,5 @@
+pnpm lint
+pnpm --filter @smartmessage/db exec prisma generate
+pnpm typecheck
+pnpm build
+pnpm test

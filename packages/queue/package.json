@@ -1,0 +1,26 @@
+{
+  "name": "@smartmessage/queue",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:cov": "vitest run",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "bullmq": "^5.34.0",
+    "ioredis": "^5.4.1"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8",
+    "typescript": "^5.6.3"
+  }
+}

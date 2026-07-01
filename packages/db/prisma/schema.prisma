@@ -1,0 +1,283 @@
+// Источник истины доменной модели Smartmessage.kz. Единственный владелец Prisma schema.
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Авто-ERD при каждой генерации/миграции (output .md = mermaid без headless-браузера).
+generator erd {
+  provider = "prisma-erd-generator"
+  output   = "../ERD.md"
+}
+
+model Team {
+  id           String        @id @default(cuid())
+  name         String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  users        User[]
+  leads        Lead[]
+  subscription Subscription?
+  waAccounts   WaAccount[]
+  campaigns    Campaign[]
+  contacts     Contact[]
+  stats        Stats?
+  permissions  Permissions?
+  waSessions   WaSession[]
+  messageLogs  MessageLog[]
+  auditLogs    AuditLog[]
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(MEMBER)
+  teamId       String
+  team         Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  auditLogs    AuditLog[]
+  createdAt    DateTime @default(now())
+
+  @@index([teamId])
+}
+
+enum ConsentStatus {
+  UNKNOWN
+  OPTED_IN
+  OPTED_OUT
+}
+
+enum LeadSource {
+  AD
+  CHAT
+  MANUAL
+  IMPORT
+}
+
+model Lead {
+  id            String        @id @default(cuid())
+  teamId        String
+  team          Team          @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  phone         String
+  name          String?
+  source        LeadSource    @default(MANUAL)
+  // Атрибуция / UTM — first-class поля
+  utmSource     String?
+  utmMedium     String?
+  utmCampaign   String?
+  creativeId    String?
+  costPerLead   Decimal?      @db.Decimal(10, 2)
+  // Согласие / opt-out — с Фазы 0 (юр. требование + смягчение банов)
+  consentStatus ConsentStatus @default(UNKNOWN)
+  consentAt     DateTime?
+  optedOutAt    DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([teamId, phone])
+  @@index([teamId])
+}
+
+// Статус проверки номера через onWhatsApp (Фаза 1). NULL = ещё не проверен.
+enum ContactWaStatus {
+  IN_PROGRESS
+  CONFIRMED
+  NOT_ON_WHATSAPP
+  ERROR
+}
+
+model Contact {
+  id        String           @id @default(cuid())
+  teamId    String
+  team      Team             @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  phone     String // нормализованный E.164 (packages/shared normalizePhone)
+  name      String?
+  isValid   ContactWaStatus? // NULL = не проверен; см. docs/ARCHITECTURE.md §6
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@unique([teamId, phone])
+  @@index([teamId])
+}
+
+enum Tier {
+  STARTER
+  GROWTH
+  SCALE
+}
+
+enum SubStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+model Subscription {
+  id                 String    @id @default(cuid())
+  teamId             String    @unique
+  team               Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  tier               Tier      @default(STARTER)
+  status             SubStatus @default(TRIALING)
+  // Биллинг через Merchant of Record (ADR-0002): провайдер-нейтральные имена
+  paymentProvider    String
+  providerSubId      String?   @unique
+  providerCustomerId String?   @unique
+  currentPeriodEnd   DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
+
+enum WaLoginType {
+  BAILEYS
+  CLOUD_API
+  EVOLUTION
+}
+
+enum WaAccountStatus {
+  CONNECTING
+  CONNECTED
+  DISCONNECTED
+  LOGGED_OUT
+  RESTRICTED
+  BANNED
+}
+
+model WaAccount {
+  id              String          @id @default(cuid())
+  teamId          String
+  team            Team            @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  instanceId      String          @unique
+  loginType       WaLoginType     @default(BAILEYS)
+  status          WaAccountStatus @default(DISCONNECTED)
+  pid             Int?
+  restrictedUntil DateTime?
+  waSession       WaSession?
+  messageLogs     MessageLog[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([teamId])
+}
+
+model WaSession {
+  id         String   @id @default(cuid())
+  instanceId String   @unique
+  waAccount  WaAccount @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+  teamId     String
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  status     String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([teamId])
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  FAILED
+}
+
+model Campaign {
+  id              String         @id @default(cuid())
+  teamId          String
+  team            Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  status          CampaignStatus @default(DRAFT)
+  timePost        DateTime?
+  run             String?        // lease ref
+  accounts        Json           // JSON list of account ids
+  nextAccount     String?
+  scheduleTime    Json           // JSON hours
+  timezone        String         @default("UTC")
+  minDelay        Int            @default(2000)
+  maxDelay        Int            @default(5000)
+  sent            Int            @default(0)
+  failed          Int            @default(0)
+  technicalFailed Int            @default(0)
+  result          Json?          // JSON status map per number
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([teamId])
+}
+
+enum MessageLogStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum MessageErrorType {
+  MEDIA_ERROR
+  SESSION_ERROR
+  SEND_ERROR
+}
+
+model MessageLog {
+  id         String           @id @default(cuid())
+  instanceId String
+  waAccount  WaAccount        @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+  teamId     String
+  team       Team             @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  phone      String
+  type       String
+  message    String
+  status     MessageLogStatus @default(QUEUED)
+  errorType  MessageErrorType?
+  timePost   DateTime         @default(now())
+
+  @@index([teamId])
+  @@index([instanceId])
+}
+
+model Stats {
+  id                 String   @id @default(cuid())
+  teamId             String   @unique
+  team               Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  waTotalSent        Int      @default(0)
+  waTotalSentByMonth Int      @default(0)
+  waTimeReset        DateTime @default(now())
+  bulkTotal          Int      @default(0)
+  bulkSent           Int      @default(0)
+  bulkFailed         Int      @default(0)
+}
+
+model Permissions {
+  id                       String   @id @default(cuid())
+  teamId                   String   @unique
+  team                     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  tier                     Tier     @default(STARTER)
+  monthlyBroadcastMessages Int      @default(10000)
+  monthlyAiGenerations     Int      @default(500)
+  maxWhatsappAccounts      Int      @default(1)
+  updatedAt                DateTime @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+
+  @@index([teamId])
+  @@index([userId])
+}

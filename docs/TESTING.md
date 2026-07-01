@@ -245,6 +245,7 @@ pnpm build             # 0 ошибок
 | `retry_onfail` пересоздаёт сокет, не повторяет отправку | тест: session_error на конкретном сообщении → retry → сообщение отправлено |
 | Нет глобального rate-limit → бан | тест: параллельные кампании на одном аккаунте → суммарная скорость ≤ лимита |
 | `logout()` на обычном reconnect → QR заново | тест: transient disconnect → reconnect без logout → креды сохранены |
+| QR пришёл для уже зарегистрированной сессии → креды удалены | `wa-session-registered-qr.spec.ts`: registered auth-state сохраняется, QR не превращается в logout |
 | Токен в query → утечка в логи | ревью + lint-правило: никаких секретов в URL-параметрах |
 | SQL-интерполяция → injection | запрет raw `$queryRawUnsafe` без review; только parameterized |
 | `Bad MAC` от рассинхрона auth-state | тест: auth-state в Redis переживает рестарт воркера |
