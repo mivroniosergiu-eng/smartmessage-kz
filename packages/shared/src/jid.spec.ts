@@ -9,4 +9,10 @@ describe('jid', () => {
     expect(isJid('77012345678@s.whatsapp.net')).toBe(true)
     expect(isJid('+77012345678')).toBe(false)
   })
+
+  it('rejects malformed numeric JIDs', () => {
+    expect(() => jidToPhone('123@s.whatsapp.net')).toThrow()
+    expect(isJid('123@s.whatsapp.net')).toBe(false)
+    expect(isJid('87012345678@s.whatsapp.net')).toBe(false)
+  })
 })

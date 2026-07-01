@@ -2,6 +2,9 @@ packages:
   - 'apps/*'
   - 'packages/*'
 
+overrides:
+  ioredis: 5.11.1
+
 onlyBuiltDependencies:
   - esbuild
   - prisma
@@ -15,11 +18,12 @@ ignoredBuiltDependencies:
 verifyDepsBeforeRun: false
 
 allowBuilds:
-  '@nestjs/core': set this to true or false
-  '@prisma/client': set this to true or false
-  '@prisma/engines': set this to true or false
-  '@swc/core': set this to true or false
-  esbuild: set this to true or false
-  msgpackr-extract: set this to true or false
-  prisma: set this to true or false
-  puppeteer: set this to true or false
+  '@nestjs/core': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  '@swc/core': true
+  esbuild: true
+  msgpackr-extract: true
+  prisma: true
+  puppeteer: false
+  unrs-resolver: false

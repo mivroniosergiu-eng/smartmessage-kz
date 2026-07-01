@@ -2,19 +2,24 @@
 
 import { z } from 'zod'
 import { prisma } from '@smartmessage/db'
+import type { Prisma } from '@smartmessage/db'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { hashPassword, verifyPassword, encryptSession } from '../lib/auth'
 
+const INVALID_EMAIL_MESSAGE = 'РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ С„РѕСЂРјР°С‚ email'
+const DUPLICATE_EMAIL_ERROR = 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ СЃ С‚Р°РєРёРј email СѓР¶Рµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅ'
+const INVALID_CREDENTIALS_ERROR = 'РќРµРІРµСЂРЅС‹Р№ email РёР»Рё РїР°СЂРѕР»СЊ'
+
 const RegisterSchema = z.object({
-  email: z.string().email({ message: 'Некорректный формат email' }),
-  password: z.string().min(6, { message: 'Пароль должен быть не менее 6 символов' }),
-  teamName: z.string().min(1, { message: 'Имя команды не может быть пустым' }),
+  email: z.string().email({ message: INVALID_EMAIL_MESSAGE }),
+  password: z.string().min(6, { message: 'РџР°СЂРѕР»СЊ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РЅРµ РјРµРЅРµРµ 6 СЃРёРјРІРѕР»РѕРІ' }),
+  teamName: z.string().min(1, { message: 'РРјСЏ РєРѕРјР°РЅРґС‹ РЅРµ РјРѕР¶РµС‚ Р±С‹С‚СЊ РїСѓСЃС‚С‹Рј' }),
 })
 
 const LoginSchema = z.object({
-  email: z.string().email({ message: 'Некорректный формат email' }),
-  password: z.string().min(1, { message: 'Пароль не может быть пустым' }),
+  email: z.string().email({ message: INVALID_EMAIL_MESSAGE }),
+  password: z.string().min(1, { message: 'РџР°СЂРѕР»СЊ РЅРµ РјРѕР¶РµС‚ Р±С‹С‚СЊ РїСѓСЃС‚С‹Рј' }),
 })
 
 export type FormState = {
@@ -22,10 +27,7 @@ export type FormState = {
   success?: boolean
 } | null
 
-/**
- * Server Action для регистрации нового пользователя и создания команды.
- */
-export async function registerAction(prevState: FormState, formData: FormData): Promise<FormState> {
+export async function registerAction(_prevState: FormState, formData: FormData): Promise<FormState> {
   const email = formData.get('email') as string
   const password = formData.get('password') as string
   const teamName = formData.get('teamName') as string
@@ -41,13 +43,12 @@ export async function registerAction(prevState: FormState, formData: FormData): 
     })
 
     if (existingUser) {
-      return { error: 'Пользователь с таким email уже зарегистрирован' }
+      return { error: DUPLICATE_EMAIL_ERROR }
     }
 
     const passwordHash = hashPassword(password)
 
-    // Выполняем создание команды, пользователя и связанных сущностей в транзакции
-    const user = await prisma.$transaction(async (tx) => {
+    const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const team = await tx.team.create({
         data: {
           name: teamName,
@@ -63,7 +64,6 @@ export async function registerAction(prevState: FormState, formData: FormData): 
         },
       })
 
-      // Инициализируем Subscription
       await tx.subscription.create({
         data: {
           teamId: team.id,
@@ -73,7 +73,6 @@ export async function registerAction(prevState: FormState, formData: FormData): 
         },
       })
 
-      // Инициализируем Permissions (лимиты Starter-тарифа)
       await tx.permissions.create({
         data: {
           teamId: team.id,
@@ -84,7 +83,6 @@ export async function registerAction(prevState: FormState, formData: FormData): 
         },
       })
 
-      // Инициализируем Stats
       await tx.stats.create({
         data: {
           teamId: team.id,
@@ -92,7 +90,6 @@ export async function registerAction(prevState: FormState, formData: FormData): 
         },
       })
 
-      // Записываем лог аудита
       await tx.auditLog.create({
         data: {
           teamId: team.id,
@@ -105,7 +102,6 @@ export async function registerAction(prevState: FormState, formData: FormData): 
       return newUser
     })
 
-    // Устанавливаем куку сессии
     const sessionToken = encryptSession({
       userId: user.id,
       email: user.email,
@@ -118,22 +114,21 @@ export async function registerAction(prevState: FormState, formData: FormData): 
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 7, // 7 дней
+      maxAge: 60 * 60 * 24 * 7,
     })
-
   } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return { error: DUPLICATE_EMAIL_ERROR }
+    }
+
     console.error('Registration error:', error)
-    return { error: 'Произошла внутренняя ошибка при регистрации' }
+    return { error: 'РџСЂРѕРёР·РѕС€Р»Р° РІРЅСѓС‚СЂРµРЅРЅСЏСЏ РѕС€РёР±РєР° РїСЂРё СЂРµРіРёСЃС‚СЂР°С†РёРё' }
   }
 
-  // Редирект должен быть вне блока try-catch, так как он бросает специальное исключение
   redirect('/dashboard')
 }
 
-/**
- * Server Action для входа пользователя.
- */
-export async function loginAction(prevState: FormState, formData: FormData): Promise<FormState> {
+export async function loginAction(_prevState: FormState, formData: FormData): Promise<FormState> {
   const email = formData.get('email') as string
   const password = formData.get('password') as string
 
@@ -148,10 +143,9 @@ export async function loginAction(prevState: FormState, formData: FormData): Pro
     })
 
     if (!user || !verifyPassword(password, user.passwordHash)) {
-      return { error: 'Неверный email или пароль' }
+      return { error: INVALID_CREDENTIALS_ERROR }
     }
 
-    // Устанавливаем куку сессии
     const sessionToken = encryptSession({
       userId: user.id,
       email: user.email,
@@ -164,21 +158,26 @@ export async function loginAction(prevState: FormState, formData: FormData): Pro
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 7, // 7 дней
+      maxAge: 60 * 60 * 24 * 7,
     })
-
   } catch (error) {
     console.error('Login error:', error)
-    return { error: 'Произошла внутренняя ошибка при авторизации' }
+    return { error: 'РџСЂРѕРёР·РѕС€Р»Р° РІРЅСѓС‚СЂРµРЅРЅСЏСЏ РѕС€РёР±РєР° РїСЂРё Р°РІС‚РѕСЂРёР·Р°С†РёРё' }
   }
 
   redirect('/dashboard')
 }
 
-/**
- * Server Action для выхода.
- */
 export async function logoutAction(): Promise<void> {
   cookies().delete('session')
   redirect('/login')
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'P2002'
+  )
 }

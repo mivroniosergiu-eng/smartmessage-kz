@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
+import crypto from 'crypto'
+import { describe, it, expect, afterAll, beforeEach, vi } from 'vitest'
 import { prisma } from '@smartmessage/db'
 import { hashPassword, verifyPassword, encryptSession, decryptSession } from './lib/auth'
 import { registerAction, loginAction, logoutAction } from './actions/auth'
 
-// Заглушка для Next.js cookies и redirect
 const mockCookies = {
   get: vi.fn(),
   set: vi.fn(),
@@ -18,31 +18,41 @@ const mockRedirect = vi.fn()
 vi.mock('next/navigation', () => ({
   redirect: (url: string) => {
     mockRedirect(url)
-    // Next.js redirect кидает специальную ошибку, имитируем это
     throw new Error('NEXT_REDIRECT')
   },
 }))
 
 describe('Auth Utilities', () => {
-  it('должен правильно хэшировать и проверять пароли', () => {
+  it('hashes and verifies passwords with encoded KDF parameters', () => {
     const password = 'mySecretPassword123'
     const hash = hashPassword(password)
-    
-    expect(hash).toContain(':')
+    const [algorithm, digest, iterations, salt, derivedKey] = hash.split(':')
+
+    expect(algorithm).toBe('pbkdf2')
+    expect(digest).toBe('sha512')
+    expect(Number(iterations)).toBeGreaterThanOrEqual(210000)
+    expect(salt).toHaveLength(32)
+    expect(derivedKey).toHaveLength(128)
     expect(verifyPassword(password, hash)).toBe(true)
     expect(verifyPassword('wrongPassword', hash)).toBe(false)
   })
 
-  it('должен кодировать, подписывать и декодировать сессии', () => {
+  it('supports legacy salt:hash password hashes', () => {
+    const password = 'legacyPassword123'
+    const salt = '0123456789abcdef0123456789abcdef'
+    const legacyHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex')
+
+    expect(verifyPassword(password, `${salt}:${legacyHash}`)).toBe(true)
+    expect(verifyPassword('wrongPassword', `${salt}:${legacyHash}`)).toBe(false)
+  })
+
+  it('encodes, signs, and decodes sessions', () => {
     const payload = { userId: '123', email: 'test@mail.com', role: 'OWNER' }
     const token = encryptSession(payload)
-    
-    expect(token).toContain('.')
-    
-    const decoded = decryptSession(token)
-    expect(decoded).toEqual(payload)
 
-    // Проверка невалидной сигнатуры
+    expect(token).toContain('.')
+    expect(decryptSession(token)).toEqual(payload)
+
     const tamperedToken = token.slice(0, -5) + 'xxxxx'
     expect(decryptSession(tamperedToken)).toBeNull()
   })
@@ -55,7 +65,6 @@ describe('Auth Server Actions', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
-    // Очищаем тестовые данные перед каждым прогоном
     await prisma.user.deleteMany({ where: { email: testEmail } })
     await prisma.team.deleteMany({ where: { name: testTeamName } })
   })
@@ -66,7 +75,7 @@ describe('Auth Server Actions', () => {
     await prisma.$disconnect()
   })
 
-  it('registerAction: должен регистрировать нового пользователя и инициализировать лимиты команды', async () => {
+  it('registerAction creates owner user and initializes team limits', async () => {
     const formData = new FormData()
     formData.append('email', testEmail)
     formData.append('password', testPassword)
@@ -74,11 +83,10 @@ describe('Auth Server Actions', () => {
 
     try {
       await registerAction(null, formData)
-    } catch (e: any) {
-      expect(e.message).toBe('NEXT_REDIRECT')
+    } catch (error: any) {
+      expect(error.message).toBe('NEXT_REDIRECT')
     }
 
-    // Проверяем, что пользователь создан
     const user = await prisma.user.findUnique({
       where: { email: testEmail },
       include: {
@@ -96,31 +104,41 @@ describe('Auth Server Actions', () => {
     expect(user?.email).toBe(testEmail)
     expect(verifyPassword(testPassword, user!.passwordHash)).toBe(true)
     expect(user?.role).toBe('OWNER')
-    
-    // Проверяем инициализацию связанных таблиц
     expect(user?.team.name).toBe(testTeamName)
     expect(user?.team.permissions).not.toBeNull()
     expect(user?.team.permissions?.tier).toBe('STARTER')
     expect(user?.team.subscription).not.toBeNull()
     expect(user?.team.stats).not.toBeNull()
-
-    // Проверяем, что была установлена сессионная кука
     expect(mockCookies.set).toHaveBeenCalled()
     expect(mockRedirect).toHaveBeenCalledWith('/dashboard')
   })
 
-  it('registerAction: должен возвращать ошибку при невалидном email', async () => {
+  it('registerAction returns validation error for invalid email', async () => {
     const formData = new FormData()
     formData.append('email', 'invalid-email')
     formData.append('password', testPassword)
     formData.append('teamName', testTeamName)
 
     const result = await registerAction(null, formData)
-    expect(result?.error).toBe('Некорректный формат email')
+
+    expect(result?.error).toBe('РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ С„РѕСЂРјР°С‚ email')
   })
 
-  it('loginAction: должен авторизовывать пользователя при верных данных', async () => {
-    // Сначала регистрируем
+  it('registerAction handles P2002 as duplicate email', async () => {
+    const formData = new FormData()
+    formData.append('email', testEmail)
+    formData.append('password', testPassword)
+    formData.append('teamName', testTeamName)
+    const transactionSpy = vi.spyOn(prisma, '$transaction')
+    transactionSpy.mockRejectedValueOnce({ code: 'P2002' } as never)
+
+    const result = await registerAction(null, formData)
+
+    expect(result?.error).toBe('РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ СЃ С‚Р°РєРёРј email СѓР¶Рµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅ')
+    transactionSpy.mockRestore()
+  })
+
+  it('loginAction signs in with valid credentials', async () => {
     const hash = hashPassword(testPassword)
     const team = await prisma.team.create({ data: { name: testTeamName } })
     await prisma.user.create({
@@ -138,16 +156,15 @@ describe('Auth Server Actions', () => {
 
     try {
       await loginAction(null, formData)
-    } catch (e: any) {
-      expect(e.message).toBe('NEXT_REDIRECT')
+    } catch (error: any) {
+      expect(error.message).toBe('NEXT_REDIRECT')
     }
 
     expect(mockCookies.set).toHaveBeenCalled()
     expect(mockRedirect).toHaveBeenCalledWith('/dashboard')
   })
 
-  it('loginAction: должен возвращать ошибку при неверном пароле', async () => {
-    // Регистрируем
+  it('loginAction returns error for invalid password', async () => {
     const hash = hashPassword(testPassword)
     const team = await prisma.team.create({ data: { name: testTeamName } })
     await prisma.user.create({
@@ -164,15 +181,16 @@ describe('Auth Server Actions', () => {
     formData.append('password', 'wrongPassword')
 
     const result = await loginAction(null, formData)
-    expect(result?.error).toBe('Неверный email или пароль')
+
+    expect(result?.error).toBe('РќРµРІРµСЂРЅС‹Р№ email РёР»Рё РїР°СЂРѕР»СЊ')
     expect(mockCookies.set).not.toHaveBeenCalled()
   })
 
-  it('logoutAction: должен удалять куку сессии и перенаправлять на страницу входа', async () => {
+  it('logoutAction deletes session cookie and redirects to login', async () => {
     try {
       await logoutAction()
-    } catch (e: any) {
-      expect(e.message).toBe('NEXT_REDIRECT')
+    } catch (error: any) {
+      expect(error.message).toBe('NEXT_REDIRECT')
     }
 
     expect(mockCookies.delete).toHaveBeenCalledWith('session')

@@ -27,6 +27,9 @@ model Team {
   contacts     Contact[]
   stats        Stats?
   permissions  Permissions?
+  waSessions   WaSession[]
+  messageLogs  MessageLog[]
+  auditLogs    AuditLog[]
 }
 
 enum Role {
@@ -39,9 +42,10 @@ model User {
   id           String   @id @default(cuid())
   email        String   @unique
   passwordHash String
-  role         Role     @default(OWNER)
+  role         Role     @default(MEMBER)
   teamId       String
   team         Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  auditLogs    AuditLog[]
   createdAt    DateTime @default(now())
 
   @@index([teamId])
@@ -53,12 +57,20 @@ enum ConsentStatus {
   OPTED_OUT
 }
 
+enum LeadSource {
+  AD
+  CHAT
+  MANUAL
+  IMPORT
+}
+
 model Lead {
   id            String        @id @default(cuid())
   teamId        String
   team          Team          @relation(fields: [teamId], references: [id], onDelete: Cascade)
   phone         String
   name          String?
+  source        LeadSource    @default(MANUAL)
   // Атрибуция / UTM — first-class поля
   utmSource     String?
   utmMedium     String?
@@ -120,7 +132,7 @@ model Subscription {
   // Биллинг через Merchant of Record (ADR-0002): провайдер-нейтральные имена
   paymentProvider    String
   providerSubId      String?   @unique
-  providerCustomerId String?
+  providerCustomerId String?   @unique
   currentPeriodEnd   DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -150,6 +162,8 @@ model WaAccount {
   status          WaAccountStatus @default(DISCONNECTED)
   pid             Int?
   restrictedUntil DateTime?
+  waSession       WaSession?
+  messageLogs     MessageLog[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -159,7 +173,9 @@ model WaAccount {
 model WaSession {
   id         String   @id @default(cuid())
   instanceId String   @unique
+  waAccount  WaAccount @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
   teamId     String
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
   status     String
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -215,7 +231,9 @@ enum MessageErrorType {
 model MessageLog {
   id         String           @id @default(cuid())
   instanceId String
+  waAccount  WaAccount        @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
   teamId     String
+  team       Team             @relation(fields: [teamId], references: [id], onDelete: Cascade)
   phone      String
   type       String
   message    String
@@ -253,10 +271,13 @@ model Permissions {
 model AuditLog {
   id        String   @id @default(cuid())
   teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
   userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   action    String
   details   String?
   createdAt DateTime @default(now())
 
   @@index([teamId])
+  @@index([userId])
 }

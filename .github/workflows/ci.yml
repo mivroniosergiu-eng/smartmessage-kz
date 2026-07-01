@@ -50,7 +50,10 @@ jobs:
       - name: No test weakening
         if: github.event_name == 'pull_request'
         run: |
-          if git diff origin/${{ github.base_ref }}...HEAD -- '*.test.ts' '*.spec.ts' | grep -E '^\+.*(\.skip\(|\.only\(|\bxit\()'; then
+          if git diff origin/${{ github.base_ref }}...HEAD -- \
+            '*.test.ts' '*.spec.ts' '*.test.tsx' '*.spec.tsx' \
+            '*.test.js' '*.spec.js' '*.test.jsx' '*.spec.jsx' | \
+            grep -E '^\+.*(\.skip\(|\.only\(|\bxit\()'; then
             echo "::error::Запрещено глушить/ослаблять тесты через .skip/.only/xit. Чините код."
             exit 1
           fi

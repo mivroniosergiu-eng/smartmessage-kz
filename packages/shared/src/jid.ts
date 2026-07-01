@@ -1,6 +1,6 @@
 import { normalizePhone } from './phone'
 
-const JID_RE = /^(\d+)@s\.whatsapp\.net$/
+const JID_RE = /^(7\d{10})@s\.whatsapp\.net$/
 
 /** Телефон -> WhatsApp JID. */
 export function phoneToJid(phone: string): string {
@@ -11,9 +11,16 @@ export function phoneToJid(phone: string): string {
 export function jidToPhone(jid: string): string {
   const m = JID_RE.exec(jid)
   if (!m) throw new Error(`invalid JID: ${jid}`)
-  return '+' + m[1]
+  const digits = m[1]
+  if (!digits) throw new Error(`invalid JID: ${jid}`)
+  return normalizePhone(digits)
 }
 
 export function isJid(value: string): boolean {
-  return JID_RE.test(value)
+  try {
+    jidToPhone(value)
+    return true
+  } catch {
+    return false
+  }
 }

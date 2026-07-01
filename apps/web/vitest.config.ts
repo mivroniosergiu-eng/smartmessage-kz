@@ -7,11 +7,11 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
-    include: ['app/**/*.spec.{ts,tsx}'],
+    include: ['app/**/*.spec.{ts,tsx}', 'middleware.spec.ts'],
     coverage: {
       provider: 'v8',
-      include: ['app/**/*.{ts,tsx}'],
-      exclude: ['app/layout.tsx'],
+      include: ['app/**/*.{ts,tsx}', 'middleware.ts'],
+      exclude: ['**/*.spec.{ts,tsx}', '**/*.test.{ts,tsx}', 'app/layout.tsx'],
     },
   },
 })

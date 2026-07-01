@@ -12,8 +12,11 @@ export default async function DashboardPage() {
   }
 
   // Получаем лимиты тарифа и информацию о команде из БД
-  const team = await prisma.team.findUnique({
-    where: { id: session.teamId },
+  const team = await prisma.team.findFirst({
+    where: {
+      id: session.teamId,
+      users: { some: { id: session.userId } },
+    },
     include: {
       permissions: true,
       subscription: true,
@@ -22,7 +25,7 @@ export default async function DashboardPage() {
 
   if (!team) {
     // Если команда не найдена (например, удалена из БД), выходим
-    redirect('/login')
+    redirect('/login?invalidSession=1')
   }
 
   return (
