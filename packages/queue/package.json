@@ -13,7 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:cov": "vitest run",
-    "lint": "echo skip && exit 0"
+    "lint": "eslint src"
   },
   "dependencies": {
     "bullmq": "^5.34.0",

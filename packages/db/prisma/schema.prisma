@@ -24,6 +24,7 @@ model Team {
   subscription Subscription?
   waAccounts   WaAccount[]
   campaigns    Campaign[]
+  contacts     Contact[]
   stats        Stats?
   permissions  Permissions?
 }
@@ -70,6 +71,28 @@ model Lead {
   optedOutAt    DateTime?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
+
+  @@unique([teamId, phone])
+  @@index([teamId])
+}
+
+// Статус проверки номера через onWhatsApp (Фаза 1). NULL = ещё не проверен.
+enum ContactWaStatus {
+  IN_PROGRESS
+  CONFIRMED
+  NOT_ON_WHATSAPP
+  ERROR
+}
+
+model Contact {
+  id        String           @id @default(cuid())
+  teamId    String
+  team      Team             @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  phone     String // нормализованный E.164 (packages/shared normalizePhone)
+  name      String?
+  isValid   ContactWaStatus? // NULL = не проверен; см. docs/ARCHITECTURE.md §6
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
 
   @@unique([teamId, phone])
   @@index([teamId])

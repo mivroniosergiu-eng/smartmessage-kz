@@ -9,7 +9,7 @@
     "start": "node dist/main.js",
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
-    "lint": "echo skip && exit 0"
+    "lint": "eslint src"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",
@@ -21,10 +21,11 @@
   "devDependencies": {
     "@nestjs/testing": "^10.4.0",
     "@swc/core": "^1.7.0",
-    "unplugin-swc": "^1.5.1",
-    "typescript": "^5.6.3",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.8",
     "tsx": "^4.19.2",
-    "vitest": "^2.1.8",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.6.3",
+    "unplugin-swc": "^1.5.1",
+    "vitest": "^2.1.8"
   }
 }

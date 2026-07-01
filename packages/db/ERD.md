@@ -6,13 +6,22 @@ erDiagram
 ADMIN ADMIN
 MEMBER MEMBER
         }
-    
+
 
 
         ConsentStatus {
             UNKNOWN UNKNOWN
 OPTED_IN OPTED_IN
 OPTED_OUT OPTED_OUT
+        }
+
+
+
+        ContactWaStatus {
+            IN_PROGRESS IN_PROGRESS
+CONFIRMED CONFIRMED
+NOT_ON_WHATSAPP NOT_ON_WHATSAPP
+ERROR ERROR
         }
     
 
@@ -98,7 +107,7 @@ SEND_ERROR SEND_ERROR
 
   "Lead" {
     String id "🗝️"
-    String phone 
+    String phone
     String name "❓"
     String utmSource "❓"
     String utmMedium "❓"
@@ -108,6 +117,16 @@ SEND_ERROR SEND_ERROR
     ConsentStatus consentStatus 
     DateTime consentAt "❓"
     DateTime optedOutAt "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "Contact" {
+    String id "🗝️"
+    String phone
+    String name "❓"
+    ContactWaStatus isValid "❓"
     DateTime createdAt 
     DateTime updatedAt 
     }
@@ -216,12 +235,15 @@ SEND_ERROR SEND_ERROR
     "Team" o{--}o "Subscription" : "subscription"
     "Team" o{--}o "WaAccount" : "waAccounts"
     "Team" o{--}o "Campaign" : "campaigns"
+    "Team" o{--}o "Contact" : "contacts"
     "Team" o{--}o "Stats" : "stats"
     "Team" o{--}o "Permissions" : "permissions"
     "User" o|--|| "Role" : "enum:role"
     "User" o|--|| "Team" : "team"
     "Lead" o|--|| "Team" : "team"
     "Lead" o|--|| "ConsentStatus" : "enum:consentStatus"
+    "Contact" o|--|| "Team" : "team"
+    "Contact" o|--|o "ContactWaStatus" : "enum:isValid"
     "Subscription" o|--|| "Team" : "team"
     "Subscription" o|--|| "Tier" : "enum:tier"
     "Subscription" o|--|| "SubStatus" : "enum:status"

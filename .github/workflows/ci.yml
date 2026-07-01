@@ -41,9 +41,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @smartmessage/db exec prisma generate
       - run: pnpm --filter @smartmessage/db exec prisma migrate deploy
+      - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test:cov
+      - run: pnpm --filter @smartmessage/web exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
       - name: No test weakening
         if: github.event_name == 'pull_request'
         run: |

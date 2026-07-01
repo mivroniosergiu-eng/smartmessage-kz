@@ -24,4 +24,24 @@ describe('multi-tenant isolation', () => {
     const all = await prisma.lead.findMany({ where: { phone: '+77010000001' } })
     expect(all).toHaveLength(2)
   })
+
+  it('контакты уникальны внутри команды, но могут повторяться между командами', async () => {
+    await prisma.contact.deleteMany({ where: { teamId: { in: [A, B] } } })
+    await prisma.contact.create({
+      data: { teamId: A, phone: '+77010000002', name: 'A Contact', isValid: 'CONFIRMED' },
+    })
+    await prisma.contact.create({
+      data: { teamId: B, phone: '+77010000002', name: 'B Contact', isValid: 'NOT_ON_WHATSAPP' },
+    })
+
+    await expect(
+      prisma.contact.create({
+        data: { teamId: A, phone: '+77010000002', name: 'Duplicate' },
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' })
+
+    const contacts = await prisma.contact.findMany({ where: { phone: '+77010000002' } })
+    expect(contacts).toHaveLength(2)
+    expect(contacts.map((contact) => contact.isValid).sort()).toEqual(['CONFIRMED', 'NOT_ON_WHATSAPP'])
+  })
 })

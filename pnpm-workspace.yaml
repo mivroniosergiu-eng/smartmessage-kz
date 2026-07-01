@@ -10,6 +10,7 @@ onlyBuiltDependencies:
 
 ignoredBuiltDependencies:
   - puppeteer
+  - unrs-resolver
 
 verifyDepsBeforeRun: false
 
