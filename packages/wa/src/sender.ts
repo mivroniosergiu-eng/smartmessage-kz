@@ -13,7 +13,6 @@ export type SendMessageStatus = 'accepted' | 'failed'
 export interface SendMessageResult {
   messageId: string
   status: SendMessageStatus
-  provider: 'mock'
 }
 
 export interface MessageSender {
@@ -29,7 +28,6 @@ export class MockMessageSender implements MessageSender {
     return {
       messageId: stableMockMessageId(payload),
       status: 'accepted',
-      provider: 'mock',
     }
   }
 }
