@@ -1,6 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PrismaClient, WaAccountStatus } from '@smartmessage/db'
+import {
+  RENEW_WA_INSTANCE_JOB_NAME,
+  START_WA_INSTANCE_JOB_NAME,
+  STOP_WA_INSTANCE_JOB_NAME,
+  type WaLifecycleJobName,
+} from '@smartmessage/queue'
 
 import {
   PrismaWaAccountCommandGuard,
@@ -26,15 +32,17 @@ describe('PrismaWaAccountCommandGuard', () => {
   it('accepts an existing WaAccount.instanceId and returns the normalized target', async () => {
     await createWaAccount('command-guard-instance')
 
-    await expect(guard.assertCommandableInstance(' command-guard-instance ')).resolves.toEqual({
+    await expect(
+      guard.assertCommandableInstance(' command-guard-instance ', START_WA_INSTANCE_JOB_NAME),
+    ).resolves.toEqual({
       instanceId: 'command-guard-instance',
     })
   })
 
   it('rejects a missing instanceId with an explicit error and does not create WaAccount', async () => {
-    await expect(guard.assertCommandableInstance('missing-command-guard-instance')).rejects.toBeInstanceOf(
-      WaAccountCommandTargetNotFoundError,
-    )
+    await expect(
+      guard.assertCommandableInstance('missing-command-guard-instance', START_WA_INSTANCE_JOB_NAME),
+    ).rejects.toBeInstanceOf(WaAccountCommandTargetNotFoundError)
 
     await expect(
       prisma.waAccount.findMany({ where: { instanceId: 'missing-command-guard-instance' } }),
@@ -44,7 +52,7 @@ describe('PrismaWaAccountCommandGuard', () => {
   it('does not mutate WaAccount status while authorizing commands', async () => {
     await createWaAccount('command-guard-status-instance', WaAccountStatus.RESTRICTED)
 
-    await guard.assertCommandableInstance('command-guard-status-instance')
+    await guard.assertCommandableInstance('command-guard-status-instance', START_WA_INSTANCE_JOB_NAME)
 
     await expect(
       prisma.waAccount.findUniqueOrThrow({ where: { instanceId: 'command-guard-status-instance' } }),
@@ -54,19 +62,26 @@ describe('PrismaWaAccountCommandGuard', () => {
     })
   })
 
-  it('rejects invalid blank instanceId before querying Prisma', async () => {
-    const db = {
-      waAccount: {
-        findUnique: vi.fn(async () => ({ instanceId: 'should-not-query' })),
-      },
-    }
-    const isolatedGuard = new PrismaWaAccountCommandGuard(db as unknown as PrismaClient)
+  it.each([
+    START_WA_INSTANCE_JOB_NAME,
+    STOP_WA_INSTANCE_JOB_NAME,
+    RENEW_WA_INSTANCE_JOB_NAME,
+  ] satisfies WaLifecycleJobName[])(
+    'rejects invalid blank instanceId for %s before querying Prisma',
+    async (jobName) => {
+      const db = {
+        waAccount: {
+          findUnique: vi.fn(async () => ({ instanceId: 'should-not-query' })),
+        },
+      }
+      const isolatedGuard = new PrismaWaAccountCommandGuard(db as unknown as PrismaClient)
 
-    await expect(isolatedGuard.assertCommandableInstance('   ')).rejects.toThrow(
-      'start-wa-instance payload.instanceId must be a non-empty string',
-    )
-    expect(db.waAccount.findUnique).not.toHaveBeenCalled()
-  })
+      await expect(isolatedGuard.assertCommandableInstance('   ', jobName)).rejects.toThrow(
+        `${jobName} payload.instanceId must be a non-empty string`,
+      )
+      expect(db.waAccount.findUnique).not.toHaveBeenCalled()
+    },
+  )
 })
 
 async function createWaAccount(instanceId: string, status = WaAccountStatus.DISCONNECTED): Promise<void> {

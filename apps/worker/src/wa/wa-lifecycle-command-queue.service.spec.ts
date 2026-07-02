@@ -2,6 +2,13 @@ import 'reflect-metadata'
 
 import { describe, expect, it, vi } from 'vitest'
 
+import {
+  RENEW_WA_INSTANCE_JOB_NAME,
+  START_WA_INSTANCE_JOB_NAME,
+  STOP_WA_INSTANCE_JOB_NAME,
+  type WaLifecycleJobName,
+} from '@smartmessage/queue'
+
 import type { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { WaAccountCommandTargetNotFoundError } from './prisma-wa-account-command.guard'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
@@ -13,7 +20,7 @@ describe('WaLifecycleCommandQueueService', () => {
 
     await service.enqueueStart(' instance-1 ')
 
-    expect(guard.assertCommandableInstance).toHaveBeenCalledWith(' instance-1 ')
+    expect(guard.assertCommandableInstance).toHaveBeenCalledWith(' instance-1 ', START_WA_INSTANCE_JOB_NAME)
     expect(queueService.enqueueStart).toHaveBeenCalledWith('instance-1')
   })
 
@@ -22,7 +29,7 @@ describe('WaLifecycleCommandQueueService', () => {
 
     await service.enqueueStop(' instance-2 ')
 
-    expect(guard.assertCommandableInstance).toHaveBeenCalledWith(' instance-2 ')
+    expect(guard.assertCommandableInstance).toHaveBeenCalledWith(' instance-2 ', STOP_WA_INSTANCE_JOB_NAME)
     expect(queueService.enqueueStop).toHaveBeenCalledWith('instance-2')
   })
 
@@ -31,7 +38,7 @@ describe('WaLifecycleCommandQueueService', () => {
 
     await service.enqueueRenew(' instance-3 ')
 
-    expect(guard.assertCommandableInstance).toHaveBeenCalledWith(' instance-3 ')
+    expect(guard.assertCommandableInstance).toHaveBeenCalledWith(' instance-3 ', RENEW_WA_INSTANCE_JOB_NAME)
     expect(queueService.enqueueRenew).toHaveBeenCalledWith('instance-3')
   })
 
@@ -41,7 +48,7 @@ describe('WaLifecycleCommandQueueService', () => {
 
     await expect(service.enqueueStart('missing-instance')).rejects.toBe(error)
 
-    expect(guard.assertCommandableInstance).toHaveBeenCalledWith('missing-instance')
+    expect(guard.assertCommandableInstance).toHaveBeenCalledWith('missing-instance', START_WA_INSTANCE_JOB_NAME)
     expect(queueService.enqueueStart).not.toHaveBeenCalled()
     expect(queueService.enqueueStop).not.toHaveBeenCalled()
     expect(queueService.enqueueRenew).not.toHaveBeenCalled()
@@ -50,7 +57,7 @@ describe('WaLifecycleCommandQueueService', () => {
 
 function createService(error?: Error): ServiceFixture {
   const guard = {
-    assertCommandableInstance: vi.fn(async (instanceId: string) => {
+    assertCommandableInstance: vi.fn(async (instanceId: string, _jobName: WaLifecycleJobName) => {
       if (error) throw error
 
       return { instanceId: instanceId.trim() }
@@ -75,7 +82,7 @@ function createService(error?: Error): ServiceFixture {
 interface ServiceFixture {
   guard: {
     assertCommandableInstance: ReturnType<
-      typeof vi.fn<(instanceId: string) => Promise<{ instanceId: string }>>
+      typeof vi.fn<(instanceId: string, jobName: WaLifecycleJobName) => Promise<{ instanceId: string }>>
     >
   }
   queueService: {
