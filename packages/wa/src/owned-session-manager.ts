@@ -37,6 +37,12 @@ export class OwnedSessionManager implements SessionManager {
     return this.inner.connect(instanceId)
   }
 
+  async closeTransport(instanceId: string): Promise<SessionState> {
+    await this.assertOwned(instanceId)
+
+    return this.inner.closeTransport(instanceId)
+  }
+
   async handleDisconnect(instanceId: string, reason: WaDisconnectReason): Promise<SessionState> {
     await this.assertOwned(instanceId)
 
