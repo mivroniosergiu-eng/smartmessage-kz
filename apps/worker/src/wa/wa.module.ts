@@ -21,13 +21,13 @@ import {
   WA_WORKER_ID,
 } from './wa.tokens'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
-import { WaLifecycleJobProcessor, type StartWaInstanceJobResult } from './wa-lifecycle-job.processor'
+import { WaLifecycleJobProcessor, type WaLifecycleJobResult } from './wa-lifecycle-job.processor'
 
 const DEFAULT_OWNER_TTL_MS = 30_000
 export const WA_LIFECYCLE_WORKER = Symbol('WA_LIFECYCLE_WORKER')
 
 type WaRedisConnection = ReturnType<typeof createConnection>
-type WaLifecycleWorker = QueueWorker<unknown, StartWaInstanceJobResult>
+type WaLifecycleWorker = QueueWorker<unknown, WaLifecycleJobResult>
 
 @Injectable()
 class WaRedisConnectionShutdown implements OnApplicationShutdown {
@@ -92,7 +92,7 @@ class WaLifecycleWorkerShutdown implements OnApplicationShutdown {
     {
       provide: WA_LIFECYCLE_WORKER,
       useFactory: (redis: WaRedisConnection, processor: WaLifecycleJobProcessor): WaLifecycleWorker =>
-        createWorker<unknown, StartWaInstanceJobResult>(
+        createWorker<unknown, WaLifecycleJobResult>(
           WA_LIFECYCLE_QUEUE_NAME,
           (job) => processor.process(job),
           redis,

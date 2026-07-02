@@ -4,10 +4,24 @@ import IORedis from 'ioredis'
 
 export const WA_LIFECYCLE_QUEUE_NAME = 'wa-lifecycle'
 export const START_WA_INSTANCE_JOB_NAME = 'start-wa-instance'
+export const STOP_WA_INSTANCE_JOB_NAME = 'stop-wa-instance'
+export const RENEW_WA_INSTANCE_JOB_NAME = 'renew-wa-instance'
 
-export interface StartWaInstanceJobPayload {
+export const WA_LIFECYCLE_JOB_NAMES = [
+  START_WA_INSTANCE_JOB_NAME,
+  STOP_WA_INSTANCE_JOB_NAME,
+  RENEW_WA_INSTANCE_JOB_NAME,
+] as const
+
+export type WaLifecycleJobName = (typeof WA_LIFECYCLE_JOB_NAMES)[number]
+
+export interface WaLifecycleInstanceJobPayload {
   instanceId: string
 }
+
+export type StartWaInstanceJobPayload = WaLifecycleInstanceJobPayload
+export type StopWaInstanceJobPayload = WaLifecycleInstanceJobPayload
+export type RenewWaInstanceJobPayload = WaLifecycleInstanceJobPayload
 
 /** Создаёт Redis-соединение, совместимое с BullMQ (maxRetriesPerRequest: null). */
 export function createConnection(url: string = process.env.REDIS_URL ?? 'redis://localhost:6379'): IORedis {
@@ -28,17 +42,28 @@ export function createWorker<T, R = unknown>(
   return new Worker<T, R>(name, processor, { connection })
 }
 
-export function parseStartWaInstanceJobPayload(payload: unknown): StartWaInstanceJobPayload {
+export function parseWaLifecycleInstanceJobPayload(
+  payload: unknown,
+  jobName: WaLifecycleJobName | string,
+): WaLifecycleInstanceJobPayload {
   if (!isRecord(payload) || typeof payload.instanceId !== 'string') {
-    throw new TypeError('start-wa-instance payload.instanceId must be a non-empty string')
+    throwInvalidWaLifecycleInstancePayload(jobName)
   }
 
   const instanceId = payload.instanceId.trim()
   if (instanceId.length === 0) {
-    throw new TypeError('start-wa-instance payload.instanceId must be a non-empty string')
+    throwInvalidWaLifecycleInstancePayload(jobName)
   }
 
   return { instanceId }
+}
+
+export function parseStartWaInstanceJobPayload(payload: unknown): StartWaInstanceJobPayload {
+  return parseWaLifecycleInstanceJobPayload(payload, START_WA_INSTANCE_JOB_NAME)
+}
+
+function throwInvalidWaLifecycleInstancePayload(jobName: WaLifecycleJobName | string): never {
+  throw new TypeError(`${jobName} payload.instanceId must be a non-empty string`)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
