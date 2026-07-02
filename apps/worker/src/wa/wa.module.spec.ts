@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   WA_OWNER_REGISTRY,
   WA_OWNER_TTL_MS,
+  WA_LIFECYCLE_QUEUE,
   WA_REDIS_CONNECTION,
   WA_SESSION_LIFECYCLE,
   WA_SESSION_MANAGER,
@@ -25,12 +26,23 @@ import { WA_LIFECYCLE_WORKER } from './wa.module'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleJobProcessor } from './wa-lifecycle-job.processor'
+import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
 
 const queueMock = vi.hoisted(() => {
+  const queues: Array<{ close: ReturnType<typeof vi.fn>; add: ReturnType<typeof vi.fn> }> = []
   const workers: Array<{ close: ReturnType<typeof vi.fn> }> = []
 
   return {
+    queues,
     workers,
+    createQueue: vi.fn(() => {
+      const queue = {
+        add: vi.fn(async () => ({ id: 'job-1' })),
+        close: vi.fn(async () => undefined),
+      }
+      queues.push(queue)
+      return queue
+    }),
     createWorker: vi.fn(() => {
       const worker = { close: vi.fn(async () => undefined) }
       workers.push(worker)
@@ -44,6 +56,7 @@ vi.mock('@smartmessage/queue', async (importOriginal) => {
 
   return {
     ...actual,
+    createQueue: queueMock.createQueue,
     createWorker: queueMock.createWorker,
   }
 })
@@ -54,7 +67,9 @@ const originalWaOwnerTtlMs = process.env.WA_OWNER_TTL_MS
 describe('WaModule', () => {
   afterEach(() => {
     restoreEnv()
+    queueMock.createQueue.mockClear()
     queueMock.createWorker.mockClear()
+    queueMock.queues.length = 0
     queueMock.workers.length = 0
   })
 
@@ -74,6 +89,8 @@ describe('WaModule', () => {
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)
       expect(moduleRef.get(WaLifecycleJobProcessor)).toBeInstanceOf(WaLifecycleJobProcessor)
+      expect(moduleRef.get(WaLifecycleQueueService)).toBeInstanceOf(WaLifecycleQueueService)
+      expect(moduleRef.get(WA_LIFECYCLE_QUEUE)).toBe(queueMock.queues.at(-1))
       expect(moduleRef.get(WA_LIFECYCLE_WORKER)).toBe(queueMock.workers.at(-1))
       expect(moduleRef.get(WA_OWNER_TTL_MS)).toBe(30_000)
     } finally {
@@ -158,6 +175,43 @@ describe('WaModule', () => {
     }
 
     expect(worker?.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('creates one WA lifecycle queue provider and exposes the enqueue service', async () => {
+    const fakeRedisConnection = createFakeRedisConnection()
+    const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
+      .overrideProvider(WA_REDIS_CONNECTION)
+      .useValue(fakeRedisConnection)
+      .compile()
+
+    try {
+      expect(queueMock.createQueue).toHaveBeenCalledWith(WA_LIFECYCLE_QUEUE_NAME, fakeRedisConnection)
+      expect(queueMock.createQueue).toHaveBeenCalledTimes(1)
+      expect(queueMock.createWorker).toHaveBeenCalledTimes(1)
+
+      const service = moduleRef.get(WaLifecycleQueueService)
+      await service.enqueueStart(' instance-1 ')
+
+      expect(queueMock.queues.at(-1)?.add).toHaveBeenCalledWith(
+        START_WA_INSTANCE_JOB_NAME,
+        { instanceId: 'instance-1' },
+        expect.objectContaining({ jobId: 'wa-lifecycle.start-wa-instance.instance-1' }),
+      )
+    } finally {
+      await moduleRef.close()
+    }
+  })
+
+  it('closes the WA lifecycle queue on application shutdown', async () => {
+    const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
+      .overrideProvider(WA_REDIS_CONNECTION)
+      .useValue(createFakeRedisConnection())
+      .compile()
+    const queue = queueMock.queues.at(-1)
+
+    await moduleRef.close()
+
+    expect(queue?.close).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the worker wiring on the mock session manager without Baileys or real sockets', async () => {
