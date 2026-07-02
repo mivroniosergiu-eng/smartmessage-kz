@@ -1,6 +1,7 @@
 import type { OwnerRegistry } from './owner-registry'
 import { OwnedSessionManager, WaOwnershipError } from './owned-session-manager'
 import type { SessionManager, SessionState } from './session'
+import type { WaAccountStatusRepository } from './status-repository'
 
 const CONNECT_ATTEMPTS = 3
 const CONNECT_BACKOFF_MS = 10
@@ -22,6 +23,7 @@ export class WaSessionLifecycleService {
     private readonly ownerRegistry: OwnerRegistry,
     sessionManager: SessionManager,
     ttlMs: number,
+    private readonly statusRepository?: WaAccountStatusRepository,
   ) {
     this.workerId = normalizeWorkerId(workerId)
     this.ttlMs = normalizeTtl(ttlMs)
@@ -35,12 +37,27 @@ export class WaSessionLifecycleService {
     }
 
     const renewal = this.startRenewalLoop(instanceId)
+    let connectError: unknown
     try {
-      const state = await this.connectWithRetry(instanceId)
+      await this.statusRepository?.markConnecting(instanceId, this.workerId)
+      const state = await this.connectWithRetry(instanceId).catch((error: unknown) => {
+        connectError = error
+        throw error
+      })
       await this.assertLeaseStillOwned(instanceId)
+      await this.statusRepository?.markConnected(instanceId, this.workerId)
       return state
     } catch (error) {
+      let statusError: unknown
+      if (connectError && !(connectError instanceof WaOwnershipError)) {
+        try {
+          await this.statusRepository?.markDisconnected(instanceId, this.workerId, reasonFromError(connectError))
+        } catch (caught) {
+          statusError = caught
+        }
+      }
       await this.ownerRegistry.release(instanceId, this.workerId)
+      if (statusError) throw statusError
       throw error
     } finally {
       renewal.stop()
@@ -55,7 +72,8 @@ export class WaSessionLifecycleService {
     const owner = await this.ownerRegistry.getOwner(instanceId)
     if (owner !== this.workerId) return false
 
-    await this.ownedSessions.closeTransport(instanceId)
+    const state = await this.ownedSessions.closeTransport(instanceId)
+    await this.statusRepository?.markDisconnected(instanceId, this.workerId, state.lastDisconnectReason)
 
     return this.ownerRegistry.release(instanceId, this.workerId)
   }
@@ -120,4 +138,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     timerRuntime.setTimeout(resolve, ms)
   })
+}
+
+function reasonFromError(error: unknown): string | undefined {
+  if (error instanceof Error && error.message.length > 0) return error.message
+  if (typeof error === 'string' && error.length > 0) return error
+
+  return undefined
 }
