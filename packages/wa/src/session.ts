@@ -26,6 +26,7 @@ export interface SessionState {
 export interface SessionManager {
   getState(instanceId: string): Promise<SessionState>
   connect(instanceId: string): Promise<SessionState>
+  closeTransport(instanceId: string): Promise<SessionState>
   handleDisconnect(instanceId: string, reason: WaDisconnectReason): Promise<SessionState>
   logout(instanceId: string): Promise<SessionState>
 }
@@ -44,6 +45,18 @@ export class MockSessionManager implements SessionManager {
       status: 'connected',
       hasAuthState: true,
       lastDisconnectReason: undefined,
+    }
+    this.sessions.set(instanceId, next)
+    return this.clone(next)
+  }
+
+  async closeTransport(instanceId: string): Promise<SessionState> {
+    const state = this.ensureSession(instanceId)
+    const next: SessionState = {
+      ...state,
+      status: 'disconnected',
+      hasAuthState: state.hasAuthState,
+      lastDisconnectReason: 'connection_closed',
     }
     this.sessions.set(instanceId, next)
     return this.clone(next)

@@ -77,6 +77,28 @@ describe('OwnedSessionManager', () => {
     expect(state.lastDisconnectReason).toBe('transient')
   })
 
+  it('allows the owner worker to close runtime transport without logging out', async () => {
+    const { manager, registry } = createHarness('worker-a')
+    registry.setOwner('instance-transport', 'worker-a')
+    await manager.connect('instance-transport')
+
+    const state = await manager.closeTransport('instance-transport')
+
+    expect(state.status).toBe('disconnected')
+    expect(state.hasAuthState).toBe(true)
+    expect(state.logoutCount).toBe(0)
+    expect(state.lastDisconnectReason).toBe('connection_closed')
+  })
+
+  it('rejects closeTransport from a non-owner worker before touching the inner manager', async () => {
+    const { manager, registry, inner } = createHarness('worker-b')
+    registry.setOwner('instance-transport-foreign', 'worker-a')
+    const closeTransport = vi.spyOn(inner, 'closeTransport')
+
+    await expect(manager.closeTransport('instance-transport-foreign')).rejects.toBeInstanceOf(WaOwnershipError)
+    expect(closeTransport).not.toHaveBeenCalled()
+  })
+
   it('rejects logout from a non-owner worker before touching the inner manager', async () => {
     const { manager, registry, inner } = createHarness('worker-b')
     registry.setOwner('instance-4', 'worker-a')
@@ -91,13 +113,16 @@ describe('OwnedSessionManager', () => {
     registry.setOwner('instance-5', 'worker-a')
     registry.clearOwner('instance-5')
     const connect = vi.spyOn(inner, 'connect')
+    const closeTransport = vi.spyOn(inner, 'closeTransport')
     const disconnect = vi.spyOn(inner, 'handleDisconnect')
     const logout = vi.spyOn(inner, 'logout')
 
     await expect(manager.connect('instance-5')).rejects.toMatchObject({ owner: null })
+    await expect(manager.closeTransport('instance-5')).rejects.toMatchObject({ owner: null })
     await expect(manager.handleDisconnect('instance-5', 'connection_closed')).rejects.toMatchObject({ owner: null })
     await expect(manager.logout('instance-5')).rejects.toMatchObject({ owner: null })
     expect(connect).not.toHaveBeenCalled()
+    expect(closeTransport).not.toHaveBeenCalled()
     expect(disconnect).not.toHaveBeenCalled()
     expect(logout).not.toHaveBeenCalled()
   })
