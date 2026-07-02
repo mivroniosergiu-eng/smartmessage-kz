@@ -44,7 +44,7 @@ export function createWorker<T, R = unknown>(
 
 export function parseWaLifecycleInstanceJobPayload(
   payload: unknown,
-  jobName: WaLifecycleJobName | string,
+  jobName: WaLifecycleJobName,
 ): WaLifecycleInstanceJobPayload {
   if (!isRecord(payload) || typeof payload.instanceId !== 'string') {
     throwInvalidWaLifecycleInstancePayload(jobName)
@@ -62,7 +62,13 @@ export function parseStartWaInstanceJobPayload(payload: unknown): StartWaInstanc
   return parseWaLifecycleInstanceJobPayload(payload, START_WA_INSTANCE_JOB_NAME)
 }
 
-function throwInvalidWaLifecycleInstancePayload(jobName: WaLifecycleJobName | string): never {
+export function createWaLifecycleJobId(jobName: WaLifecycleJobName, payload: unknown): string {
+  const { instanceId } = parseWaLifecycleInstanceJobPayload(payload, jobName)
+
+  return `wa-lifecycle.${encodeURIComponent(jobName)}.${encodeURIComponent(instanceId)}`
+}
+
+function throwInvalidWaLifecycleInstancePayload(jobName: WaLifecycleJobName): never {
   throw new TypeError(`${jobName} payload.instanceId must be a non-empty string`)
 }
 

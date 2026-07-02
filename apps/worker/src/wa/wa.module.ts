@@ -1,6 +1,6 @@
 import { Inject, Injectable, Module, type OnApplicationShutdown } from '@nestjs/common'
-import { WA_LIFECYCLE_QUEUE_NAME, createConnection, createWorker } from '@smartmessage/queue'
-import type { Worker as QueueWorker } from '@smartmessage/queue'
+import { WA_LIFECYCLE_QUEUE_NAME, createConnection, createQueue, createWorker } from '@smartmessage/queue'
+import type { Queue, WaLifecycleInstanceJobPayload, Worker as QueueWorker } from '@smartmessage/queue'
 import {
   MockSessionManager,
   RedisOwnerRegistry,
@@ -14,6 +14,7 @@ import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repo
 import {
   WA_OWNER_REGISTRY,
   WA_OWNER_TTL_MS,
+  WA_LIFECYCLE_QUEUE,
   WA_REDIS_CONNECTION,
   WA_SESSION_LIFECYCLE,
   WA_SESSION_MANAGER,
@@ -22,11 +23,13 @@ import {
 } from './wa.tokens'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleJobProcessor, type WaLifecycleJobResult } from './wa-lifecycle-job.processor'
+import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
 
 const DEFAULT_OWNER_TTL_MS = 30_000
 export const WA_LIFECYCLE_WORKER = Symbol('WA_LIFECYCLE_WORKER')
 
 type WaRedisConnection = ReturnType<typeof createConnection>
+type WaLifecycleQueue = Queue<WaLifecycleInstanceJobPayload>
 type WaLifecycleWorker = QueueWorker<unknown, WaLifecycleJobResult>
 
 @Injectable()
@@ -44,6 +47,15 @@ class WaLifecycleWorkerShutdown implements OnApplicationShutdown {
 
   async onApplicationShutdown(): Promise<void> {
     await this.worker.close()
+  }
+}
+
+@Injectable()
+class WaLifecycleQueueShutdown implements OnApplicationShutdown {
+  constructor(@Inject(WA_LIFECYCLE_QUEUE) private readonly queue: WaLifecycleQueue) {}
+
+  async onApplicationShutdown(): Promise<void> {
+    await this.queue.close()
   }
 }
 
@@ -90,6 +102,14 @@ class WaLifecycleWorkerShutdown implements OnApplicationShutdown {
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
     {
+      provide: WA_LIFECYCLE_QUEUE,
+      useFactory: (redis: WaRedisConnection): WaLifecycleQueue =>
+        createQueue<WaLifecycleInstanceJobPayload>(WA_LIFECYCLE_QUEUE_NAME, redis),
+      inject: [WA_REDIS_CONNECTION],
+    },
+    WaLifecycleQueueService,
+    WaLifecycleQueueShutdown,
+    {
       provide: WA_LIFECYCLE_WORKER,
       useFactory: (redis: WaRedisConnection, processor: WaLifecycleJobProcessor): WaLifecycleWorker =>
         createWorker<unknown, WaLifecycleJobResult>(
@@ -111,6 +131,8 @@ class WaLifecycleWorkerShutdown implements OnApplicationShutdown {
     WA_SESSION_LIFECYCLE,
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
+    WA_LIFECYCLE_QUEUE,
+    WaLifecycleQueueService,
     WA_LIFECYCLE_WORKER,
   ],
 })
