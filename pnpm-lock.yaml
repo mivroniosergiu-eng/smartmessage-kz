@@ -108,6 +108,9 @@ importers:
       '@smartmessage/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@smartmessage/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
       '@smartmessage/wa':
         specifier: workspace:*
         version: link:../../packages/wa

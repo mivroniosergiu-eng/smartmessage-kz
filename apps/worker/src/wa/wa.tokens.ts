@@ -1,0 +1,7 @@
+export const WA_WORKER_ID = Symbol('WA_WORKER_ID')
+export const WA_OWNER_TTL_MS = Symbol('WA_OWNER_TTL_MS')
+export const WA_REDIS_CONNECTION = Symbol('WA_REDIS_CONNECTION')
+export const WA_OWNER_REGISTRY = Symbol('WA_OWNER_REGISTRY')
+export const WA_SESSION_MANAGER = Symbol('WA_SESSION_MANAGER')
+export const WA_STATUS_REPOSITORY = Symbol('WA_STATUS_REPOSITORY')
+export const WA_SESSION_LIFECYCLE = Symbol('WA_SESSION_LIFECYCLE')
