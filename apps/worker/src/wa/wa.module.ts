@@ -19,6 +19,7 @@ import {
   WA_STATUS_REPOSITORY,
   WA_WORKER_ID,
 } from './wa.tokens'
+import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 
 const DEFAULT_OWNER_TTL_MS = 30_000
 
@@ -73,6 +74,7 @@ class WaRedisConnectionShutdown implements OnApplicationShutdown {
         new WaSessionLifecycleService(workerId, ownerRegistry, sessionManager, ttlMs, statusRepository),
       inject: [WA_WORKER_ID, WA_OWNER_REGISTRY, WA_SESSION_MANAGER, WA_OWNER_TTL_MS, WA_STATUS_REPOSITORY],
     },
+    WaLifecycleCommandService,
   ],
   exports: [
     WA_WORKER_ID,
@@ -82,6 +84,7 @@ class WaRedisConnectionShutdown implements OnApplicationShutdown {
     WA_SESSION_MANAGER,
     WA_STATUS_REPOSITORY,
     WA_SESSION_LIFECYCLE,
+    WaLifecycleCommandService,
   ],
 })
 export class WaModule {}
