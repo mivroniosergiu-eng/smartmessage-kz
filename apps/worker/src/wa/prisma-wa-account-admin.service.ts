@@ -103,7 +103,19 @@ function normalizeTeamId(teamId: string): string {
 }
 
 function normalizeInstanceId(instanceId: string): string {
-  return parseWaLifecycleInstanceJobPayload({ instanceId }, START_WA_INSTANCE_JOB_NAME).instanceId
+  if (typeof instanceId !== 'string') {
+    throw new WaAccountAdminInvalidInputError('instanceId must be a non-empty string')
+  }
+
+  try {
+    return parseWaLifecycleInstanceJobPayload({ instanceId }, START_WA_INSTANCE_JOB_NAME).instanceId
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new WaAccountAdminInvalidInputError('instanceId must be a non-empty string')
+    }
+
+    throw error
+  }
 }
 
 function isPrismaError(error: unknown, code: string): error is Prisma.PrismaClientKnownRequestError {

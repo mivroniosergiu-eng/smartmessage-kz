@@ -5,6 +5,7 @@ import { Prisma, PrismaClient, WaAccountStatus } from '@smartmessage/db'
 import {
   PrismaWaAccountAdminService,
   WaAccountAdminDuplicateInstanceError,
+  WaAccountAdminInvalidInputError,
   WaAccountAdminTeamNotFoundError,
 } from './prisma-wa-account-admin.service'
 
@@ -91,7 +92,7 @@ describe('PrismaWaAccountAdminService', () => {
     [
       'blank instanceId',
       { teamId, instanceId: '   ' },
-      'start-wa-instance payload.instanceId must be a non-empty string',
+      'instanceId must be a non-empty string',
     ],
   ])('rejects %s before querying Prisma', async (_caseName, input, message) => {
     const db = {
@@ -104,6 +105,7 @@ describe('PrismaWaAccountAdminService', () => {
     const isolatedService = new PrismaWaAccountAdminService(db as unknown as PrismaClient)
 
     await expect(isolatedService.createAccount(input)).rejects.toThrow(message)
+    await expect(isolatedService.createAccount(input)).rejects.toBeInstanceOf(WaAccountAdminInvalidInputError)
     expect(db.team.findUnique).not.toHaveBeenCalled()
     expect(db.waAccount.findUnique).not.toHaveBeenCalled()
     expect(db.waAccount.create).not.toHaveBeenCalled()
