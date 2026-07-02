@@ -18,6 +18,7 @@ import {
 import { WaModule } from './wa.module'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
+import { WaLifecycleJobProcessor } from './wa-lifecycle-job.processor'
 
 const originalWaWorkerId = process.env.WA_WORKER_ID
 const originalWaOwnerTtlMs = process.env.WA_OWNER_TTL_MS
@@ -42,6 +43,7 @@ describe('WaModule', () => {
       expect(moduleRef.get(WA_SESSION_MANAGER)).toBeInstanceOf(MockSessionManager)
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)
+      expect(moduleRef.get(WaLifecycleJobProcessor)).toBeInstanceOf(WaLifecycleJobProcessor)
       expect(moduleRef.get(WA_OWNER_TTL_MS)).toBe(30_000)
     } finally {
       await moduleRef.close()
