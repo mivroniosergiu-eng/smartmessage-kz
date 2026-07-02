@@ -4,6 +4,7 @@ import type { OwnerClaimResult, OwnerRegistry } from './owner-registry'
 import { WaOwnershipError } from './owned-session-manager'
 import { WaSessionLifecycleService } from './session-lifecycle'
 import { MockSessionManager, type SessionState } from './session'
+import { InMemoryWaAccountStatusRepository } from './status-repository'
 
 const ttlMs = 1_000
 const shortTtlMs = 10
@@ -14,6 +15,7 @@ class FakeOwnerRegistry implements OwnerRegistry {
   readonly claims: Array<{ instanceId: string; workerId: string; ttlMs: number }> = []
   readonly renewals: Array<{ instanceId: string; workerId: string; ttlMs: number }> = []
   readonly releases: Array<{ instanceId: string; workerId: string }> = []
+  readonly events: string[] = []
 
   async claim(instanceId: string, workerId: string, ttl: number): Promise<OwnerClaimResult> {
     this.claims.push({ instanceId, workerId, ttlMs: ttl })
@@ -31,6 +33,7 @@ class FakeOwnerRegistry implements OwnerRegistry {
 
   async release(instanceId: string, workerId: string): Promise<boolean> {
     this.releases.push({ instanceId, workerId })
+    this.events.push('release')
     if (this.owners.get(instanceId) !== workerId) return false
 
     this.owners.delete(instanceId)
@@ -94,7 +97,7 @@ class FailingCloseTransportSessionManager extends MockSessionManager {
 
 describe('WaSessionLifecycleService', () => {
   it('claims ownership then connects on start', async () => {
-    const { lifecycle, registry, sessions } = createHarness('worker-a')
+    const { lifecycle, registry, sessions, statuses } = createHarness('worker-a')
     const connect = vi.spyOn(sessions, 'connect')
 
     const state = await lifecycle.start('instance-1')
@@ -108,10 +111,16 @@ describe('WaSessionLifecycleService', () => {
       hasAuthState: true,
     })
     await expect(registry.getOwner('instance-1')).resolves.toBe('worker-a')
+    expect(statuses.getHistory('instance-1').map((entry) => entry.status)).toEqual(['connecting', 'connected'])
+    expect(statuses.getLast('instance-1')).toMatchObject({
+      instanceId: 'instance-1',
+      workerId: 'worker-a',
+      status: 'connected',
+    })
   })
 
   it('rejects start if another worker owns the lease', async () => {
-    const { lifecycle, registry, sessions } = createHarness('worker-b')
+    const { lifecycle, registry, sessions, statuses } = createHarness('worker-b')
     registry.setOwner('instance-2', 'worker-a')
     const connect = vi.spyOn(sessions, 'connect')
 
@@ -124,6 +133,7 @@ describe('WaSessionLifecycleService', () => {
       owner: 'worker-a',
     })
     expect(connect).not.toHaveBeenCalled()
+    expect(statuses.getHistory('instance-2')).toEqual([])
     await expect(registry.getOwner('instance-2')).resolves.toBe('worker-a')
   })
 
@@ -157,12 +167,20 @@ describe('WaSessionLifecycleService', () => {
   it('releases ownership for the active worker after all connect attempts fail', async () => {
     const registry = new FakeOwnerRegistry()
     const sessions = new FailingConnectSessionManager()
-    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
     const connect = vi.spyOn(sessions, 'connect')
 
     await expect(lifecycle.start('instance-3')).rejects.toThrow('connect failed')
 
     expect(connect).toHaveBeenCalledTimes(3)
+    expect(statuses.getHistory('instance-3').map((entry) => entry.status)).toEqual(['connecting', 'disconnected'])
+    expect(statuses.getLast('instance-3')).toMatchObject({
+      instanceId: 'instance-3',
+      workerId: 'worker-a',
+      status: 'disconnected',
+      reason: 'connect failed',
+    })
     expect(registry.releases).toEqual([{ instanceId: 'instance-3', workerId: 'worker-a' }])
     await expect(registry.getOwner('instance-3')).resolves.toBeNull()
   })
@@ -188,13 +206,20 @@ describe('WaSessionLifecycleService', () => {
   it('stops only the active owner', async () => {
     const registry = new FakeOwnerRegistry()
     const sessions = new MockSessionManager()
-    const ownerLifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const ownerLifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
     const foreignLifecycle = new WaSessionLifecycleService('worker-b', registry, sessions, ttlMs)
     await ownerLifecycle.start('instance-5')
     const closeTransport = vi.spyOn(sessions, 'closeTransport')
+    const markDisconnected = vi.spyOn(statuses, 'markDisconnected')
+    markDisconnected.mockImplementation(async (...args) => {
+      registry.events.push('markDisconnected')
+      return InMemoryWaAccountStatusRepository.prototype.markDisconnected.apply(statuses, args)
+    })
 
     await expect(foreignLifecycle.stop('instance-5')).resolves.toBe(false)
     expect(closeTransport).not.toHaveBeenCalled()
+    expect(markDisconnected).not.toHaveBeenCalled()
     expect(registry.releases).toEqual([])
     await expect(registry.getOwner('instance-5')).resolves.toBe('worker-a')
     await expect(ownerLifecycle.stop('instance-5')).resolves.toBe(true)
@@ -205,6 +230,13 @@ describe('WaSessionLifecycleService', () => {
       hasAuthState: true,
       logoutCount: 0,
     })
+    expect(statuses.getLast('instance-5')).toMatchObject({
+      instanceId: 'instance-5',
+      workerId: 'worker-a',
+      status: 'disconnected',
+      reason: 'connection_closed',
+    })
+    expect(registry.events).toEqual(['markDisconnected', 'release'])
     await expect(registry.getOwner('instance-5')).resolves.toBeNull()
   })
 
@@ -241,13 +273,15 @@ describe('WaSessionLifecycleService', () => {
 function createHarness(workerId: string): {
   registry: FakeOwnerRegistry
   sessions: MockSessionManager
+  statuses: InMemoryWaAccountStatusRepository
   lifecycle: WaSessionLifecycleService
 } {
   const registry = new FakeOwnerRegistry()
   const sessions = new MockSessionManager()
-  const lifecycle = new WaSessionLifecycleService(workerId, registry, sessions, ttlMs)
+  const statuses = new InMemoryWaAccountStatusRepository()
+  const lifecycle = new WaSessionLifecycleService(workerId, registry, sessions, ttlMs, statuses)
 
-  return { registry, sessions, lifecycle }
+  return { registry, sessions, statuses, lifecycle }
 }
 
 function delay(ms: number): Promise<void> {
