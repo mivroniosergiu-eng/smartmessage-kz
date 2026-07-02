@@ -3,7 +3,11 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { Test } from '@nestjs/testing'
-import { START_WA_INSTANCE_JOB_NAME, WA_LIFECYCLE_QUEUE_NAME } from '@smartmessage/queue'
+import {
+  START_WA_INSTANCE_JOB_NAME,
+  STOP_WA_INSTANCE_JOB_NAME,
+  WA_LIFECYCLE_QUEUE_NAME,
+} from '@smartmessage/queue'
 import { MockSessionManager, WaSessionLifecycleService } from '@smartmessage/wa'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -117,6 +121,7 @@ describe('WaModule', () => {
         expect.any(Function),
         fakeRedisConnection,
       )
+      expect(queueMock.createWorker).toHaveBeenCalledTimes(1)
 
       const workerProcessor = queueMock.createWorker.mock.calls.at(-1)?.[1] as
         | ((job: { name: string; data: unknown }) => Promise<unknown>)
@@ -124,7 +129,8 @@ describe('WaModule', () => {
       const jobProcessor = moduleRef.get(WaLifecycleJobProcessor)
       const processSpy = vi
         .spyOn(jobProcessor, 'process')
-        .mockResolvedValue({ instanceId: 'instance-1', status: 'connected' })
+        .mockResolvedValueOnce({ instanceId: 'instance-1', status: 'connected' })
+        .mockResolvedValueOnce({ instanceId: 'instance-1', stopped: true })
 
       await expect(
         workerProcessor?.({
@@ -134,6 +140,17 @@ describe('WaModule', () => {
       ).resolves.toEqual({ instanceId: 'instance-1', status: 'connected' })
       expect(processSpy).toHaveBeenCalledWith({
         name: START_WA_INSTANCE_JOB_NAME,
+        data: { instanceId: 'instance-1' },
+      })
+
+      await expect(
+        workerProcessor?.({
+          name: STOP_WA_INSTANCE_JOB_NAME,
+          data: { instanceId: 'instance-1' },
+        }),
+      ).resolves.toEqual({ instanceId: 'instance-1', stopped: true })
+      expect(processSpy).toHaveBeenCalledWith({
+        name: STOP_WA_INSTANCE_JOB_NAME,
         data: { instanceId: 'instance-1' },
       })
     } finally {
