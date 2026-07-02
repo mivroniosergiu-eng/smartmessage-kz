@@ -16,7 +16,8 @@
     "lint": "eslint src"
   },
   "dependencies": {
-    "@smartmessage/shared": "workspace:*"
+    "@smartmessage/shared": "workspace:*",
+    "ioredis": "5.11.1"
   },
   "devDependencies": {
     "vitest": "^2.1.8",
