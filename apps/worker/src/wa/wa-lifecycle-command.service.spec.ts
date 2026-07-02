@@ -115,9 +115,9 @@ function createFakeRedisConnection(): unknown {
 }
 
 interface LifecycleMock {
-  start: ReturnType<typeof vi.fn<[string], Promise<SessionState>>>
-  stop: ReturnType<typeof vi.fn<[string], Promise<boolean>>>
-  renew: ReturnType<typeof vi.fn<[string], Promise<boolean>>>
+  start: ReturnType<typeof vi.fn<(instanceId: string) => Promise<SessionState>>>
+  stop: ReturnType<typeof vi.fn<(instanceId: string) => Promise<boolean>>>
+  renew: ReturnType<typeof vi.fn<(instanceId: string) => Promise<boolean>>>
 }
 
 type WaAccountStatusRepositoryMock = {
