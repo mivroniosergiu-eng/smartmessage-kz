@@ -1,5 +1,6 @@
 import { Inject, Injectable, Module, type OnApplicationShutdown } from '@nestjs/common'
-import { createConnection } from '@smartmessage/queue'
+import { WA_LIFECYCLE_QUEUE_NAME, createConnection, createWorker } from '@smartmessage/queue'
+import type { Worker as QueueWorker } from '@smartmessage/queue'
 import {
   MockSessionManager,
   RedisOwnerRegistry,
@@ -20,10 +21,13 @@ import {
   WA_WORKER_ID,
 } from './wa.tokens'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
+import { WaLifecycleJobProcessor, type StartWaInstanceJobResult } from './wa-lifecycle-job.processor'
 
 const DEFAULT_OWNER_TTL_MS = 30_000
+export const WA_LIFECYCLE_WORKER = Symbol('WA_LIFECYCLE_WORKER')
 
 type WaRedisConnection = ReturnType<typeof createConnection>
+type WaLifecycleWorker = QueueWorker<unknown, StartWaInstanceJobResult>
 
 @Injectable()
 class WaRedisConnectionShutdown implements OnApplicationShutdown {
@@ -31,6 +35,15 @@ class WaRedisConnectionShutdown implements OnApplicationShutdown {
 
   async onApplicationShutdown(): Promise<void> {
     await this.connection.quit()
+  }
+}
+
+@Injectable()
+class WaLifecycleWorkerShutdown implements OnApplicationShutdown {
+  constructor(@Inject(WA_LIFECYCLE_WORKER) private readonly worker: WaLifecycleWorker) {}
+
+  async onApplicationShutdown(): Promise<void> {
+    await this.worker.close()
   }
 }
 
@@ -75,6 +88,18 @@ class WaRedisConnectionShutdown implements OnApplicationShutdown {
       inject: [WA_WORKER_ID, WA_OWNER_REGISTRY, WA_SESSION_MANAGER, WA_OWNER_TTL_MS, WA_STATUS_REPOSITORY],
     },
     WaLifecycleCommandService,
+    WaLifecycleJobProcessor,
+    {
+      provide: WA_LIFECYCLE_WORKER,
+      useFactory: (redis: WaRedisConnection, processor: WaLifecycleJobProcessor): WaLifecycleWorker =>
+        createWorker<unknown, StartWaInstanceJobResult>(
+          WA_LIFECYCLE_QUEUE_NAME,
+          (job) => processor.process(job),
+          redis,
+        ),
+      inject: [WA_REDIS_CONNECTION, WaLifecycleJobProcessor],
+    },
+    WaLifecycleWorkerShutdown,
   ],
   exports: [
     WA_WORKER_ID,
@@ -85,6 +110,8 @@ class WaRedisConnectionShutdown implements OnApplicationShutdown {
     WA_STATUS_REPOSITORY,
     WA_SESSION_LIFECYCLE,
     WaLifecycleCommandService,
+    WaLifecycleJobProcessor,
+    WA_LIFECYCLE_WORKER,
   ],
 })
 export class WaModule {}
