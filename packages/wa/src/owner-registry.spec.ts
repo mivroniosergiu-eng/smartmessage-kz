@@ -66,6 +66,17 @@ describe('RedisOwnerRegistry (integration)', () => {
     await expect(registry.getOwner('instance-c')).resolves.toBe('worker-a')
   })
 
+  it('does not let a non-owner worker renew a live lease', async () => {
+    await registry.claim('instance-renew-foreign', 'worker-a', 30)
+
+    await expect(registry.renew('instance-renew-foreign', 'worker-b', 1_000)).resolves.toBe(false)
+    await expect.poll(() => registry.getOwner('instance-renew-foreign'), { interval: 20, timeout: 1_000 }).toBeNull()
+    await expect(registry.claim('instance-renew-foreign', 'worker-b', 1_000)).resolves.toEqual({
+      claimed: true,
+      owner: 'worker-b',
+    })
+  })
+
   it('allows another worker to claim after the lease expires', async () => {
     await registry.claim('instance-d', 'worker-a', 30)
 
@@ -74,6 +85,52 @@ describe('RedisOwnerRegistry (integration)', () => {
       claimed: true,
       owner: 'worker-b',
     })
+  })
+
+  it('keeps encoded instance keys independent', async () => {
+    await expect(registry.claim('team A/wa:1', 'worker-a', 1_000)).resolves.toEqual({
+      claimed: true,
+      owner: 'worker-a',
+    })
+    await expect(registry.claim('team A/wa:2', 'worker-b', 1_000)).resolves.toEqual({
+      claimed: true,
+      owner: 'worker-b',
+    })
+
+    await expect(registry.getOwner('team A/wa:1')).resolves.toBe('worker-a')
+    await expect(registry.getOwner('team A/wa:2')).resolves.toBe('worker-b')
+  })
+
+  it('rejects empty instance ids', async () => {
+    await expect(registry.claim('', 'worker-a', 1_000)).rejects.toThrow('instanceId must be a non-empty string')
+    await expect(registry.claim('   ', 'worker-a', 1_000)).rejects.toThrow('instanceId must be a non-empty string')
+    await expect(registry.renew('', 'worker-a', 1_000)).rejects.toThrow('instanceId must be a non-empty string')
+    await expect(registry.release('', 'worker-a')).rejects.toThrow('instanceId must be a non-empty string')
+    await expect(registry.getOwner('   ')).rejects.toThrow('instanceId must be a non-empty string')
+  })
+
+  it('rejects empty worker ids', async () => {
+    await expect(registry.claim('instance-empty-worker', '', 1_000)).rejects.toThrow(
+      'workerId must be a non-empty string',
+    )
+    await expect(registry.claim('instance-empty-worker', '   ', 1_000)).rejects.toThrow(
+      'workerId must be a non-empty string',
+    )
+    await expect(registry.renew('instance-empty-worker', '', 1_000)).rejects.toThrow(
+      'workerId must be a non-empty string',
+    )
+    await expect(registry.release('instance-empty-worker', '   ')).rejects.toThrow(
+      'workerId must be a non-empty string',
+    )
+  })
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects invalid ttlMs value %s', async (ttlMs) => {
+    await expect(registry.claim('instance-invalid-ttl', 'worker-a', ttlMs)).rejects.toThrow(
+      'ttlMs must be a positive safe integer',
+    )
+    await expect(registry.renew('instance-invalid-ttl', 'worker-a', ttlMs)).rejects.toThrow(
+      'ttlMs must be a positive safe integer',
+    )
   })
 
   async function cleanupKeys(): Promise<void> {
