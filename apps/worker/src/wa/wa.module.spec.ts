@@ -3,8 +3,9 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { Test } from '@nestjs/testing'
+import { START_WA_INSTANCE_JOB_NAME, WA_LIFECYCLE_QUEUE_NAME } from '@smartmessage/queue'
 import { MockSessionManager, WaSessionLifecycleService } from '@smartmessage/wa'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   WA_OWNER_REGISTRY,
@@ -16,9 +17,32 @@ import {
   WA_WORKER_ID,
 } from './wa.tokens'
 import { WaModule } from './wa.module'
+import { WA_LIFECYCLE_WORKER } from './wa.module'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleJobProcessor } from './wa-lifecycle-job.processor'
+
+const queueMock = vi.hoisted(() => {
+  const workers: Array<{ close: ReturnType<typeof vi.fn> }> = []
+
+  return {
+    workers,
+    createWorker: vi.fn(() => {
+      const worker = { close: vi.fn(async () => undefined) }
+      workers.push(worker)
+      return worker
+    }),
+  }
+})
+
+vi.mock('@smartmessage/queue', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@smartmessage/queue')>()
+
+  return {
+    ...actual,
+    createWorker: queueMock.createWorker,
+  }
+})
 
 const originalWaWorkerId = process.env.WA_WORKER_ID
 const originalWaOwnerTtlMs = process.env.WA_OWNER_TTL_MS
@@ -26,6 +50,8 @@ const originalWaOwnerTtlMs = process.env.WA_OWNER_TTL_MS
 describe('WaModule', () => {
   afterEach(() => {
     restoreEnv()
+    queueMock.createWorker.mockClear()
+    queueMock.workers.length = 0
   })
 
   it('assembles the WA lifecycle providers through Nest DI', async () => {
@@ -44,6 +70,7 @@ describe('WaModule', () => {
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)
       expect(moduleRef.get(WaLifecycleJobProcessor)).toBeInstanceOf(WaLifecycleJobProcessor)
+      expect(moduleRef.get(WA_LIFECYCLE_WORKER)).toBe(queueMock.workers.at(-1))
       expect(moduleRef.get(WA_OWNER_TTL_MS)).toBe(30_000)
     } finally {
       await moduleRef.close()
@@ -74,6 +101,46 @@ describe('WaModule', () => {
         .useValue(createFakeRedisConnection())
         .compile(),
     ).rejects.toThrow('WA_OWNER_TTL_MS must be a positive safe integer')
+  })
+
+  it('starts a BullMQ consumer for WA lifecycle jobs through the job processor', async () => {
+    const fakeRedisConnection = createFakeRedisConnection()
+    const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
+      .overrideProvider(WA_REDIS_CONNECTION)
+      .useValue(fakeRedisConnection)
+      .compile()
+    const worker = queueMock.workers.at(-1)
+
+    try {
+      expect(queueMock.createWorker).toHaveBeenCalledWith(
+        WA_LIFECYCLE_QUEUE_NAME,
+        expect.any(Function),
+        fakeRedisConnection,
+      )
+
+      const workerProcessor = queueMock.createWorker.mock.calls.at(-1)?.[1] as
+        | ((job: { name: string; data: unknown }) => Promise<unknown>)
+        | undefined
+      const jobProcessor = moduleRef.get(WaLifecycleJobProcessor)
+      const processSpy = vi
+        .spyOn(jobProcessor, 'process')
+        .mockResolvedValue({ instanceId: 'instance-1', status: 'connected' })
+
+      await expect(
+        workerProcessor?.({
+          name: START_WA_INSTANCE_JOB_NAME,
+          data: { instanceId: 'instance-1' },
+        }),
+      ).resolves.toEqual({ instanceId: 'instance-1', status: 'connected' })
+      expect(processSpy).toHaveBeenCalledWith({
+        name: START_WA_INSTANCE_JOB_NAME,
+        data: { instanceId: 'instance-1' },
+      })
+    } finally {
+      await moduleRef.close()
+    }
+
+    expect(worker?.close).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the worker wiring on the mock session manager without Baileys or real sockets', async () => {

@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common'
 import { START_WA_INSTANCE_JOB_NAME, parseStartWaInstanceJobPayload } from '@smartmessage/queue'
 import type { Job } from '@smartmessage/queue'
+import type { SessionState } from '@smartmessage/wa'
 
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 
 export interface StartWaInstanceJobResult {
   instanceId: string
-  status: string
+  status: SessionState['status']
 }
 
 @Injectable()
