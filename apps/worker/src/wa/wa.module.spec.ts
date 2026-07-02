@@ -23,8 +23,10 @@ import {
 } from './wa.tokens'
 import { WaModule } from './wa.module'
 import { WA_LIFECYCLE_WORKER } from './wa.module'
+import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
+import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { WaLifecycleJobProcessor } from './wa-lifecycle-job.processor'
 import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
 
@@ -89,7 +91,9 @@ describe('WaModule', () => {
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)
       expect(moduleRef.get(WaLifecycleJobProcessor)).toBeInstanceOf(WaLifecycleJobProcessor)
+      expect(moduleRef.get(PrismaWaAccountCommandGuard)).toBeInstanceOf(PrismaWaAccountCommandGuard)
       expect(moduleRef.get(WaLifecycleQueueService)).toBeInstanceOf(WaLifecycleQueueService)
+      expect(moduleRef.get(WaLifecycleCommandQueueService)).toBeInstanceOf(WaLifecycleCommandQueueService)
       expect(moduleRef.get(WA_LIFECYCLE_QUEUE)).toBe(queueMock.queues.at(-1))
       expect(moduleRef.get(WA_LIFECYCLE_WORKER)).toBe(queueMock.workers.at(-1))
       expect(moduleRef.get(WA_OWNER_TTL_MS)).toBe(30_000)
@@ -219,11 +223,22 @@ describe('WaModule', () => {
       await readFile(path.join(process.cwd(), 'package.json'), 'utf8'),
     ) as PackageJson
     const moduleSource = await readFile(path.join(process.cwd(), 'src/wa/wa.module.ts'), 'utf8')
+    const commandGuardSource = await readFile(
+      path.join(process.cwd(), 'src/wa/prisma-wa-account-command.guard.ts'),
+      'utf8',
+    )
+    const commandQueueSource = await readFile(
+      path.join(process.cwd(), 'src/wa/wa-lifecycle-command-queue.service.ts'),
+      'utf8',
+    )
+    const waSources = [moduleSource, commandGuardSource, commandQueueSource]
 
     expect(workerPackageJson.dependencies).not.toHaveProperty('@whiskeysockets/baileys')
-    expect(moduleSource).not.toContain('@whiskeysockets/baileys')
-    expect(moduleSource).not.toContain('makeWASocket')
-    expect(moduleSource).not.toContain('useMultiFileAuthState')
+    for (const source of waSources) {
+      expect(source).not.toContain('@whiskeysockets/baileys')
+      expect(source).not.toContain('makeWASocket')
+      expect(source).not.toContain('useMultiFileAuthState')
+    }
 
     const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
       .overrideProvider(WA_REDIS_CONNECTION)

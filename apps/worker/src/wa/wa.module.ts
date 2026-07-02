@@ -11,6 +11,7 @@ import {
 } from '@smartmessage/wa'
 
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
+import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import {
   WA_OWNER_REGISTRY,
   WA_OWNER_TTL_MS,
@@ -22,6 +23,7 @@ import {
   WA_WORKER_ID,
 } from './wa.tokens'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
+import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { WaLifecycleJobProcessor, type WaLifecycleJobResult } from './wa-lifecycle-job.processor'
 import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
 
@@ -102,12 +104,17 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
     {
+      provide: PrismaWaAccountCommandGuard,
+      useFactory: (): PrismaWaAccountCommandGuard => new PrismaWaAccountCommandGuard(),
+    },
+    {
       provide: WA_LIFECYCLE_QUEUE,
       useFactory: (redis: WaRedisConnection): WaLifecycleQueue =>
         createQueue<WaLifecycleInstanceJobPayload>(WA_LIFECYCLE_QUEUE_NAME, redis),
       inject: [WA_REDIS_CONNECTION],
     },
     WaLifecycleQueueService,
+    WaLifecycleCommandQueueService,
     WaLifecycleQueueShutdown,
     {
       provide: WA_LIFECYCLE_WORKER,
@@ -131,8 +138,10 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
     WA_SESSION_LIFECYCLE,
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
+    PrismaWaAccountCommandGuard,
     WA_LIFECYCLE_QUEUE,
     WaLifecycleQueueService,
+    WaLifecycleCommandQueueService,
     WA_LIFECYCLE_WORKER,
   ],
 })
