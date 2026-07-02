@@ -12,6 +12,7 @@ import {
 
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
+import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
 import {
   WA_OWNER_REGISTRY,
   WA_OWNER_TTL_MS,
@@ -108,6 +109,10 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
       useFactory: (): PrismaWaAccountCommandGuard => new PrismaWaAccountCommandGuard(),
     },
     {
+      provide: PrismaWaAccountAdminService,
+      useFactory: (): PrismaWaAccountAdminService => new PrismaWaAccountAdminService(),
+    },
+    {
       provide: WA_LIFECYCLE_QUEUE,
       useFactory: (redis: WaRedisConnection): WaLifecycleQueue =>
         createQueue<WaLifecycleInstanceJobPayload>(WA_LIFECYCLE_QUEUE_NAME, redis),
@@ -139,6 +144,7 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
     PrismaWaAccountCommandGuard,
+    PrismaWaAccountAdminService,
     WA_LIFECYCLE_QUEUE,
     WaLifecycleQueueService,
     WaLifecycleCommandQueueService,
