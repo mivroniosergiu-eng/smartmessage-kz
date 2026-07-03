@@ -10,9 +10,11 @@ import {
   type WaAccountStatusRepository,
 } from '@smartmessage/wa'
 
+import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
+import { WaAccountController } from './wa-account.controller'
 import {
   WA_OWNER_REGISTRY,
   WA_OWNER_TTL_MS,
@@ -63,6 +65,7 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
 }
 
 @Module({
+  controllers: [WaAccountController],
   providers: [
     {
       provide: WA_WORKER_ID,
@@ -104,6 +107,7 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
     },
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
+    InternalWorkerApiGuard,
     {
       provide: PrismaWaAccountCommandGuard,
       useFactory: (): PrismaWaAccountCommandGuard => new PrismaWaAccountCommandGuard(),
@@ -143,6 +147,7 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
     WA_SESSION_LIFECYCLE,
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
+    InternalWorkerApiGuard,
     PrismaWaAccountCommandGuard,
     PrismaWaAccountAdminService,
     WA_LIFECYCLE_QUEUE,
