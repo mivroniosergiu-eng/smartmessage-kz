@@ -23,9 +23,11 @@ import {
 } from './wa.tokens'
 import { WaModule } from './wa.module'
 import { WA_LIFECYCLE_WORKER } from './wa.module'
+import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
+import { WaAccountController } from './wa-account.controller'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { WaLifecycleJobProcessor } from './wa-lifecycle-job.processor'
@@ -92,8 +94,10 @@ describe('WaModule', () => {
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)
       expect(moduleRef.get(WaLifecycleJobProcessor)).toBeInstanceOf(WaLifecycleJobProcessor)
+      expect(moduleRef.get(InternalWorkerApiGuard)).toBeInstanceOf(InternalWorkerApiGuard)
       expect(moduleRef.get(PrismaWaAccountCommandGuard)).toBeInstanceOf(PrismaWaAccountCommandGuard)
       expect(moduleRef.get(PrismaWaAccountAdminService)).toBeInstanceOf(PrismaWaAccountAdminService)
+      expect(moduleRef.get(WaAccountController)).toBeInstanceOf(WaAccountController)
       expect(moduleRef.get(WaLifecycleQueueService)).toBeInstanceOf(WaLifecycleQueueService)
       expect(moduleRef.get(WaLifecycleCommandQueueService)).toBeInstanceOf(WaLifecycleCommandQueueService)
       expect(moduleRef.get(WA_LIFECYCLE_QUEUE)).toBe(queueMock.queues.at(-1))
@@ -237,7 +241,16 @@ describe('WaModule', () => {
       path.join(process.cwd(), 'src/wa/prisma-wa-account-admin.service.ts'),
       'utf8',
     )
-    const waSources = [moduleSource, commandGuardSource, commandQueueSource, adminServiceSource]
+    const accountControllerSource = await readFile(path.join(process.cwd(), 'src/wa/wa-account.controller.ts'), 'utf8')
+    const internalGuardSource = await readFile(path.join(process.cwd(), 'src/wa/internal-worker-api.guard.ts'), 'utf8')
+    const waSources = [
+      moduleSource,
+      commandGuardSource,
+      commandQueueSource,
+      adminServiceSource,
+      accountControllerSource,
+      internalGuardSource,
+    ]
 
     expect(workerPackageJson.dependencies).not.toHaveProperty('@whiskeysockets/baileys')
     for (const source of waSources) {
