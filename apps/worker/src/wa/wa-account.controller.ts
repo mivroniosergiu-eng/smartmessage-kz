@@ -5,13 +5,20 @@ import {
   Controller,
   Get,
   HttpException,
+  Inject,
   NotFoundException,
   Param,
   Post,
   Query,
   UseGuards,
 } from '@nestjs/common'
-import type { WaAccount } from '@smartmessage/db'
+import { WaAccountStatus, type WaAccount } from '@smartmessage/db'
+import {
+  resolveWaQrBootstrapState,
+  type WaAccountRuntimeStatus,
+  type WaQrBootstrapRepository,
+  type WaQrBootstrapState,
+} from '@smartmessage/wa'
 
 import {
   PrismaWaAccountAdminService,
@@ -22,6 +29,7 @@ import {
 import { WaAccountCommandTargetNotFoundError } from './prisma-wa-account-command.guard'
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
+import { WA_QR_BOOTSTRAP_REPOSITORY } from './wa.tokens'
 
 type WaLifecycleCommand = 'start' | 'stop' | 'renew'
 
@@ -49,6 +57,8 @@ export class WaAccountController {
   constructor(
     private readonly adminService: PrismaWaAccountAdminService,
     private readonly commandQueue: WaLifecycleCommandQueueService,
+    @Inject(WA_QR_BOOTSTRAP_REPOSITORY)
+    private readonly qrBootstrapRepository: WaQrBootstrapRepository,
   ) {}
 
   @Post()
@@ -85,6 +95,26 @@ export class WaAccountController {
       }
 
       return toWaAccountDto(account)
+    } catch (error) {
+      throw mapWaHttpError(error)
+    }
+  }
+
+  @Get(':instanceId/qr')
+  async getQrBootstrapState(@Param('instanceId') instanceId: unknown): Promise<WaQrBootstrapState> {
+    const normalizedInstanceId = normalizeNonEmptyString(instanceId, 'instanceId')
+
+    try {
+      const account = await this.adminService.getAccount(normalizedInstanceId)
+      if (!account) {
+        throw new NotFoundException('WA account not found')
+      }
+
+      return resolveWaQrBootstrapState({
+        instanceId: normalizedInstanceId,
+        accountStatus: toRuntimeStatus(account.status),
+        qrEvent: await this.qrBootstrapRepository.getLatest(normalizedInstanceId),
+      })
     } catch (error) {
       throw mapWaHttpError(error)
     }
@@ -185,6 +215,16 @@ function toWaAccountDto(account: WaAccount): WaAccountDto {
     createdAt: account.createdAt.toISOString(),
     updatedAt: account.updatedAt.toISOString(),
   }
+}
+
+function toRuntimeStatus(status: WaAccountStatus): WaAccountRuntimeStatus {
+  if (status === WaAccountStatus.CONNECTING) return 'connecting'
+  if (status === WaAccountStatus.CONNECTED) return 'connected'
+  if (status === WaAccountStatus.LOGGED_OUT) return 'logged_out'
+  if (status === WaAccountStatus.RESTRICTED) return 'restricted'
+  if (status === WaAccountStatus.BANNED) return 'banned'
+
+  return 'disconnected'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

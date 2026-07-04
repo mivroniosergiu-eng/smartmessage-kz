@@ -2,12 +2,14 @@ import { Inject, Injectable, Module, type OnApplicationShutdown } from '@nestjs/
 import { WA_LIFECYCLE_QUEUE_NAME, createConnection, createQueue, createWorker } from '@smartmessage/queue'
 import type { Queue, WaLifecycleInstanceJobPayload, Worker as QueueWorker } from '@smartmessage/queue'
 import {
+  InMemoryWaQrBootstrapRepository,
   MockSessionManager,
   RedisOwnerRegistry,
   WaSessionLifecycleService,
   type OwnerRegistry,
   type SessionManager,
   type WaAccountStatusRepository,
+  type WaQrBootstrapRepository,
 } from '@smartmessage/wa'
 
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
@@ -23,6 +25,7 @@ import {
   WA_SESSION_LIFECYCLE,
   WA_SESSION_MANAGER,
   WA_STATUS_REPOSITORY,
+  WA_QR_BOOTSTRAP_REPOSITORY,
   WA_WORKER_ID,
 } from './wa.tokens'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
@@ -94,6 +97,10 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
       useFactory: (): WaAccountStatusRepository => new PrismaWaAccountStatusRepository(),
     },
     {
+      provide: WA_QR_BOOTSTRAP_REPOSITORY,
+      useFactory: (): WaQrBootstrapRepository => new InMemoryWaQrBootstrapRepository(),
+    },
+    {
       provide: WA_SESSION_LIFECYCLE,
       useFactory: (
         workerId: string,
@@ -101,9 +108,24 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
         sessionManager: SessionManager,
         ttlMs: number,
         statusRepository: WaAccountStatusRepository,
+        qrBootstrapRepository: WaQrBootstrapRepository,
       ): WaSessionLifecycleService =>
-        new WaSessionLifecycleService(workerId, ownerRegistry, sessionManager, ttlMs, statusRepository),
-      inject: [WA_WORKER_ID, WA_OWNER_REGISTRY, WA_SESSION_MANAGER, WA_OWNER_TTL_MS, WA_STATUS_REPOSITORY],
+        new WaSessionLifecycleService(
+          workerId,
+          ownerRegistry,
+          sessionManager,
+          ttlMs,
+          statusRepository,
+          qrBootstrapRepository,
+        ),
+      inject: [
+        WA_WORKER_ID,
+        WA_OWNER_REGISTRY,
+        WA_SESSION_MANAGER,
+        WA_OWNER_TTL_MS,
+        WA_STATUS_REPOSITORY,
+        WA_QR_BOOTSTRAP_REPOSITORY,
+      ],
     },
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
@@ -144,6 +166,7 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
     WA_OWNER_REGISTRY,
     WA_SESSION_MANAGER,
     WA_STATUS_REPOSITORY,
+    WA_QR_BOOTSTRAP_REPOSITORY,
     WA_SESSION_LIFECYCLE,
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,

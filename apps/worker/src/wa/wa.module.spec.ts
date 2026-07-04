@@ -8,7 +8,7 @@ import {
   STOP_WA_INSTANCE_JOB_NAME,
   WA_LIFECYCLE_QUEUE_NAME,
 } from '@smartmessage/queue'
-import { MockSessionManager, WaSessionLifecycleService } from '@smartmessage/wa'
+import { InMemoryWaQrBootstrapRepository, MockSessionManager, WaSessionLifecycleService } from '@smartmessage/wa'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -19,6 +19,7 @@ import {
   WA_SESSION_LIFECYCLE,
   WA_SESSION_MANAGER,
   WA_STATUS_REPOSITORY,
+  WA_QR_BOOTSTRAP_REPOSITORY,
   WA_WORKER_ID,
 } from './wa.tokens'
 import { WaModule } from './wa.module'
@@ -90,6 +91,7 @@ describe('WaModule', () => {
     try {
       expect(moduleRef.get(WA_OWNER_REGISTRY)).toBeDefined()
       expect(moduleRef.get(WA_STATUS_REPOSITORY)).toBeInstanceOf(PrismaWaAccountStatusRepository)
+      expect(moduleRef.get(WA_QR_BOOTSTRAP_REPOSITORY)).toBeInstanceOf(InMemoryWaQrBootstrapRepository)
       expect(moduleRef.get(WA_SESSION_MANAGER)).toBeInstanceOf(MockSessionManager)
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)

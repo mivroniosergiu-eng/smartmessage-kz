@@ -1,5 +1,6 @@
 import type { OwnerRegistry } from './owner-registry'
 import { OwnedSessionManager, WaOwnershipError } from './owned-session-manager'
+import { createWaQrPendingEvent, type WaQrBootstrapRepository, type WaQrPendingEvent } from './qr-bootstrap'
 import type { SessionManager, SessionState } from './session'
 import type { WaAccountStatusRepository } from './status-repository'
 
@@ -24,6 +25,7 @@ export class WaSessionLifecycleService {
     sessionManager: SessionManager,
     ttlMs: number,
     private readonly statusRepository?: WaAccountStatusRepository,
+    private readonly qrBootstrapRepository?: WaQrBootstrapRepository,
   ) {
     this.workerId = normalizeWorkerId(workerId)
     this.ttlMs = normalizeTtl(ttlMs)
@@ -66,6 +68,16 @@ export class WaSessionLifecycleService {
 
   renew(instanceId: string): Promise<boolean> {
     return this.ownerRegistry.renew(instanceId, this.workerId, this.ttlMs)
+  }
+
+  async recordQrPending(instanceId: string, qrCode: string, expiresAt: Date): Promise<WaQrPendingEvent> {
+    const event = createWaQrPendingEvent({ instanceId, qrCode, expiresAt })
+
+    await this.assertLeaseStillOwned(event.instanceId)
+    await this.statusRepository?.markConnecting(event.instanceId, this.workerId)
+    await this.qrBootstrapRepository?.store(event)
+
+    return event
   }
 
   async stop(instanceId: string): Promise<boolean> {
