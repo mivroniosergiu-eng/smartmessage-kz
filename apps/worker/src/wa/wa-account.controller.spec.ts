@@ -3,6 +3,11 @@ import 'reflect-metadata'
 import type { INestApplication } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { WaAccountStatus, WaLoginType, type WaAccount } from '@smartmessage/db'
+import {
+  InMemoryWaQrBootstrapRepository,
+  createWaQrPendingEvent,
+  type WaQrBootstrapRepository,
+} from '@smartmessage/wa'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -15,20 +20,24 @@ import { WaAccountCommandTargetNotFoundError } from './prisma-wa-account-command
 import { WaAccountController } from './wa-account.controller'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
+import { WA_QR_BOOTSTRAP_REPOSITORY } from './wa.tokens'
 
 const originalToken = process.env.WORKER_INTERNAL_API_TOKEN
 
 describe('WaAccountController', () => {
   let adminService: AdminServiceMock
   let commandQueue: CommandQueueMock
+  let qrBootstrapRepository: WaQrBootstrapRepository
   let controller: WaAccountController
 
   beforeEach(() => {
     adminService = createAdminServiceMock()
     commandQueue = createCommandQueueMock()
+    qrBootstrapRepository = new InMemoryWaQrBootstrapRepository()
     controller = new WaAccountController(
       adminService as unknown as PrismaWaAccountAdminService,
       commandQueue as unknown as WaLifecycleCommandQueueService,
+      qrBootstrapRepository,
     )
   })
 
@@ -132,16 +141,100 @@ describe('WaAccountController', () => {
     await expect(controller.startAccount('missing-instance')).rejects.toMatchObject({ status: 404 })
   })
 
+  it('maps missing QR bootstrap account to 404', async () => {
+    adminService.getAccount.mockResolvedValueOnce(null)
+
+    await expect(controller.getQrBootstrapState('missing-instance')).rejects.toMatchObject({ status: 404 })
+  })
+
+  it('returns account status when QR bootstrap has no QR yet', async () => {
+    adminService.getAccount.mockResolvedValueOnce(
+      createWaAccount({
+        teamId: 'team-1',
+        instanceId: 'instance-no-qr',
+        status: WaAccountStatus.CONNECTING,
+      }),
+    )
+
+    await expect(controller.getQrBootstrapState(' instance-no-qr ')).resolves.toEqual({
+      instanceId: 'instance-no-qr',
+      status: 'connecting',
+    })
+  })
+
+  it('returns QR pending bootstrap state with expiry', async () => {
+    adminService.getAccount.mockResolvedValueOnce(
+      createWaAccount({
+        teamId: 'team-1',
+        instanceId: 'instance-qr',
+        status: WaAccountStatus.CONNECTING,
+      }),
+    )
+    await qrBootstrapRepository.store(
+      createWaQrPendingEvent({
+        instanceId: 'instance-qr',
+        qrCode: 'qr-payload',
+        createdAt: new Date('2026-07-03T10:00:00.000Z'),
+        expiresAt: new Date('2999-07-03T10:01:00.000Z'),
+      }),
+    )
+
+    await expect(controller.getQrBootstrapState('instance-qr')).resolves.toEqual({
+      instanceId: 'instance-qr',
+      status: 'qr_pending',
+      qrCode: 'qr-payload',
+      expiresAt: '2999-07-03T10:01:00.000Z',
+    })
+  })
+
   it('rejects protected routes without token through Nest HTTP pipeline', async () => {
     process.env.WORKER_INTERNAL_API_TOKEN = 'worker-token'
-    const app = await createHttpApp(adminService, commandQueue)
+    const app = await createHttpApp(adminService, commandQueue, qrBootstrapRepository)
 
     try {
       await app.listen(0)
-      const response = await fetch(`${await app.getUrl()}/internal/wa/accounts?teamId=team-1`)
+      const response = await fetch(`${await app.getUrl()}/internal/wa/accounts/instance-qr/qr`)
 
       expect(response.status).toBe(401)
       expect(adminService.listAccounts).not.toHaveBeenCalled()
+      expect(adminService.getAccount).not.toHaveBeenCalled()
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('serves QR bootstrap state through Nest HTTP pipeline with a valid token', async () => {
+    process.env.WORKER_INTERNAL_API_TOKEN = 'worker-token'
+    adminService.getAccount.mockResolvedValueOnce(
+      createWaAccount({
+        teamId: 'team-1',
+        instanceId: 'instance-qr',
+        status: WaAccountStatus.CONNECTING,
+      }),
+    )
+    await qrBootstrapRepository.store(
+      createWaQrPendingEvent({
+        instanceId: 'instance-qr',
+        qrCode: 'qr-payload',
+        createdAt: new Date('2026-07-03T10:00:00.000Z'),
+        expiresAt: new Date('2999-07-03T10:01:00.000Z'),
+      }),
+    )
+    const app = await createHttpApp(adminService, commandQueue, qrBootstrapRepository)
+
+    try {
+      await app.listen(0)
+      const response = await fetch(`${await app.getUrl()}/internal/wa/accounts/instance-qr/qr`, {
+        headers: { 'x-internal-worker-token': 'worker-token' },
+      })
+
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toEqual({
+        instanceId: 'instance-qr',
+        status: 'qr_pending',
+        qrCode: 'qr-payload',
+        expiresAt: '2999-07-03T10:01:00.000Z',
+      })
     } finally {
       await app.close()
     }
@@ -164,13 +257,18 @@ function createCommandQueueMock(): CommandQueueMock {
   }
 }
 
-async function createHttpApp(adminService: AdminServiceMock, commandQueue: CommandQueueMock): Promise<INestApplication> {
+async function createHttpApp(
+  adminService: AdminServiceMock,
+  commandQueue: CommandQueueMock,
+  qrBootstrapRepository: WaQrBootstrapRepository,
+): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({
     controllers: [WaAccountController],
     providers: [
       InternalWorkerApiGuard,
       { provide: PrismaWaAccountAdminService, useValue: adminService },
       { provide: WaLifecycleCommandQueueService, useValue: commandQueue },
+      { provide: WA_QR_BOOTSTRAP_REPOSITORY, useValue: qrBootstrapRepository },
     ],
   }).compile()
 
@@ -179,7 +277,11 @@ async function createHttpApp(adminService: AdminServiceMock, commandQueue: Comma
   return app
 }
 
-function createWaAccount(input: { teamId: string; instanceId: string }): WaAccount {
+function createWaAccount(input: {
+  teamId: string
+  instanceId: string
+  status?: WaAccountStatus
+}): WaAccount {
   const now = new Date('2026-07-03T00:00:00.000Z')
 
   return {
@@ -187,7 +289,7 @@ function createWaAccount(input: { teamId: string; instanceId: string }): WaAccou
     teamId: input.teamId,
     instanceId: input.instanceId,
     loginType: WaLoginType.BAILEYS,
-    status: WaAccountStatus.DISCONNECTED,
+    status: input.status ?? WaAccountStatus.DISCONNECTED,
     pid: null,
     restrictedUntil: null,
     createdAt: now,

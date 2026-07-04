@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { OwnerClaimResult, OwnerRegistry } from './owner-registry'
 import { WaOwnershipError } from './owned-session-manager'
+import { InMemoryWaQrBootstrapRepository } from './qr-bootstrap'
 import { WaSessionLifecycleService } from './session-lifecycle'
 import { MockSessionManager, type SessionState } from './session'
 import { InMemoryWaAccountStatusRepository } from './status-repository'
@@ -201,6 +202,107 @@ describe('WaSessionLifecycleService', () => {
       { instanceId: 'instance-4', workerId: 'worker-b', ttlMs },
     ])
     await expect(registry.getOwner('instance-4')).resolves.toBe('worker-a')
+  })
+
+  it('records QR pending without opening a session socket', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const qrBootstrap = new InMemoryWaQrBootstrapRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses, qrBootstrap)
+    const connect = vi.spyOn(sessions, 'connect')
+    const expiresAt = new Date('2999-07-03T10:01:00.000Z')
+    registry.setOwner('instance-qr', 'worker-a')
+
+    const event = await lifecycle.recordQrPending(' instance-qr ', ' qr-payload ', expiresAt)
+
+    expect(event).toMatchObject({
+      type: 'qr_pending',
+      instanceId: 'instance-qr',
+      qrCode: 'qr-payload',
+      expiresAt,
+    })
+    expect(connect).not.toHaveBeenCalled()
+    expect(statuses.getLast('instance-qr')).toMatchObject({
+      instanceId: 'instance-qr',
+      workerId: 'worker-a',
+      status: 'connecting',
+    })
+    await expect(qrBootstrap.getLatest('instance-qr')).resolves.toMatchObject({
+      instanceId: 'instance-qr',
+      qrCode: 'qr-payload',
+      expiresAt,
+    })
+  })
+
+  it('allows the active owner to record QR pending under the renewed lease', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const qrBootstrap = new InMemoryWaQrBootstrapRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses, qrBootstrap)
+    const expiresAt = new Date('2999-07-03T10:01:00.000Z')
+    registry.setOwner('instance-active-qr', 'worker-a')
+
+    await expect(lifecycle.recordQrPending('instance-active-qr', 'qr-payload', expiresAt)).resolves.toMatchObject({
+      type: 'qr_pending',
+      instanceId: 'instance-active-qr',
+      qrCode: 'qr-payload',
+      expiresAt,
+    })
+
+    expect(registry.renewals).toEqual([{ instanceId: 'instance-active-qr', workerId: 'worker-a', ttlMs }])
+    expect(statuses.getLast('instance-active-qr')).toMatchObject({
+      instanceId: 'instance-active-qr',
+      workerId: 'worker-a',
+      status: 'connecting',
+    })
+    await expect(qrBootstrap.getLatest('instance-active-qr')).resolves.toMatchObject({
+      instanceId: 'instance-active-qr',
+      qrCode: 'qr-payload',
+      expiresAt,
+    })
+  })
+
+  it('rejects QR pending for a missing owner without status or QR writes', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const qrBootstrap = new InMemoryWaQrBootstrapRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses, qrBootstrap)
+    const expiresAt = new Date('2999-07-03T10:01:00.000Z')
+
+    const error = await lifecycle.recordQrPending(' instance-missing-qr ', 'qr-payload', expiresAt).catch((caught) => caught)
+
+    expect(error).toBeInstanceOf(WaOwnershipError)
+    expect(error).toMatchObject({
+      instanceId: 'instance-missing-qr',
+      workerId: 'worker-a',
+      owner: null,
+    })
+    expect(statuses.getHistory('instance-missing-qr')).toEqual([])
+    await expect(qrBootstrap.getLatest('instance-missing-qr')).resolves.toBeNull()
+  })
+
+  it('rejects QR pending for a foreign owner without status or QR writes', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const qrBootstrap = new InMemoryWaQrBootstrapRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses, qrBootstrap)
+    const expiresAt = new Date('2999-07-03T10:01:00.000Z')
+    registry.setOwner('instance-foreign-qr', 'worker-b')
+
+    const error = await lifecycle.recordQrPending('instance-foreign-qr', 'qr-payload', expiresAt).catch((caught) => caught)
+
+    expect(error).toBeInstanceOf(WaOwnershipError)
+    expect(error).toMatchObject({
+      instanceId: 'instance-foreign-qr',
+      workerId: 'worker-a',
+      owner: 'worker-b',
+    })
+    expect(statuses.getHistory('instance-foreign-qr')).toEqual([])
+    await expect(qrBootstrap.getLatest('instance-foreign-qr')).resolves.toBeNull()
   })
 
   it('stops only the active owner', async () => {
