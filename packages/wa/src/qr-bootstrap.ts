@@ -1,6 +1,6 @@
 import type { WaAccountRuntimeStatus } from './status-repository'
 
-export type WaQrBootstrapStatus = 'connecting' | 'qr_pending' | 'connected' | 'logged_out' | 'disconnected'
+export type WaQrBootstrapStatus = WaAccountRuntimeStatus | 'qr_pending'
 
 export interface WaQrCodeInput {
   value: string
@@ -124,10 +124,7 @@ export function resolveWaQrBootstrapState(input: {
 }
 
 function toBootstrapStatus(status: WaAccountRuntimeStatus): WaQrBootstrapStatus {
-  if (status === 'connected' || status === 'logged_out' || status === 'disconnected') return status
-  if (status === 'connecting') return status
-
-  return 'disconnected'
+  return status
 }
 
 function normalizeNonEmptyString(value: string, fieldName: string): string {

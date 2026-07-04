@@ -99,6 +99,16 @@ describe('WA QR bootstrap contract', () => {
       }),
     ).toEqual({ instanceId: 'instance-1', status: 'connected' })
   })
+
+  it.each(['restricted', 'banned'] as const)('preserves terminal and limited account status %s', (accountStatus) => {
+    expect(
+      resolveWaQrBootstrapState({
+        instanceId: 'instance-1',
+        accountStatus,
+        now: new Date('2026-07-03T10:00:30.000Z'),
+      }),
+    ).toEqual({ instanceId: 'instance-1', status: accountStatus })
+  })
 })
 
 describe('InMemoryWaQrBootstrapRepository', () => {

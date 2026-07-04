@@ -27,6 +27,7 @@
   - WA bootstrap contract tested without Baileys, sockets, session files, or real WA numbers.
   - QR pending lifecycle hook now requires active instance ownership before status/QR side effects.
   - Internal QR endpoint tested for auth guard, missing account, no QR yet, and QR pending state.
+  - CodeRabbit follow-up: QR bootstrap state preserves `restricted`/`banned` statuses instead of collapsing them to `disconnected`.
   - Existing start/stop/renew worker and lifecycle tests remain green.
 
 ## Ручной QA (из QA_CHECKPOINTS.md, раздел: WA internal contract)
