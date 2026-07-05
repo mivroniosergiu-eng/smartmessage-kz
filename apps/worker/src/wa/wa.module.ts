@@ -1,8 +1,17 @@
 import { Inject, Injectable, Module, type OnApplicationShutdown } from '@nestjs/common'
-import { WA_LIFECYCLE_QUEUE_NAME, createConnection, createQueue, createWorker } from '@smartmessage/queue'
-import type { Queue, WaLifecycleInstanceJobPayload, Worker as QueueWorker } from '@smartmessage/queue'
+import { prisma } from '@smartmessage/db'
 import {
-  InMemoryWaQrBootstrapRepository,
+  WA_LIFECYCLE_QUEUE_NAME,
+  createConnection,
+  createQueue,
+  createWorker,
+} from '@smartmessage/queue'
+import type {
+  Queue,
+  WaLifecycleInstanceJobPayload,
+  Worker as QueueWorker,
+} from '@smartmessage/queue'
+import {
   MockSessionManager,
   RedisOwnerRegistry,
   WaSessionLifecycleService,
@@ -14,6 +23,7 @@ import {
 
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
+import { PrismaWaQrBootstrapRepository } from './prisma-wa-qr-bootstrap.repository'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
 import { WaAccountController } from './wa-account.controller'
@@ -67,6 +77,13 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
   }
 }
 
+@Injectable()
+class WaPrismaShutdown implements OnApplicationShutdown {
+  async onApplicationShutdown(): Promise<void> {
+    await prisma.$disconnect()
+  }
+}
+
 @Module({
   controllers: [WaAccountController],
   providers: [
@@ -83,6 +100,7 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
       useFactory: () => createConnection(),
     },
     WaRedisConnectionShutdown,
+    WaPrismaShutdown,
     {
       provide: WA_OWNER_REGISTRY,
       useFactory: (redis: WaRedisConnection): OwnerRegistry => new RedisOwnerRegistry(redis),
@@ -98,7 +116,7 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
     },
     {
       provide: WA_QR_BOOTSTRAP_REPOSITORY,
-      useFactory: (): WaQrBootstrapRepository => new InMemoryWaQrBootstrapRepository(),
+      useFactory: (): WaQrBootstrapRepository => new PrismaWaQrBootstrapRepository(),
     },
     {
       provide: WA_SESSION_LIFECYCLE,
@@ -149,7 +167,10 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
     WaLifecycleQueueShutdown,
     {
       provide: WA_LIFECYCLE_WORKER,
-      useFactory: (redis: WaRedisConnection, processor: WaLifecycleJobProcessor): WaLifecycleWorker =>
+      useFactory: (
+        redis: WaRedisConnection,
+        processor: WaLifecycleJobProcessor,
+      ): WaLifecycleWorker =>
         createWorker<unknown, WaLifecycleJobResult>(
           WA_LIFECYCLE_QUEUE_NAME,
           (job) => processor.process(job),

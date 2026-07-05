@@ -163,11 +163,21 @@ model WaAccount {
   pid             Int?
   restrictedUntil DateTime?
   waSession       WaSession?
+  qrBootstrapEvent WaQrBootstrapEvent?
   messageLogs     MessageLog[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
   @@index([teamId])
+}
+
+model WaQrBootstrapEvent {
+  id         String    @id @default(cuid())
+  instanceId String    @unique
+  waAccount  WaAccount @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+  qrCode     String
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
 }
 
 model WaSession {
