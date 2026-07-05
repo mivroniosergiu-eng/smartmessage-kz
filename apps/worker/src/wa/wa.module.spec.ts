@@ -8,7 +8,7 @@ import {
   STOP_WA_INSTANCE_JOB_NAME,
   WA_LIFECYCLE_QUEUE_NAME,
 } from '@smartmessage/queue'
-import { InMemoryWaQrBootstrapRepository, MockSessionManager, WaSessionLifecycleService } from '@smartmessage/wa'
+import { MockSessionManager, WaSessionLifecycleService } from '@smartmessage/wa'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -28,6 +28,7 @@ import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
+import { PrismaWaQrBootstrapRepository } from './prisma-wa-qr-bootstrap.repository'
 import { WaAccountController } from './wa-account.controller'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
@@ -91,7 +92,9 @@ describe('WaModule', () => {
     try {
       expect(moduleRef.get(WA_OWNER_REGISTRY)).toBeDefined()
       expect(moduleRef.get(WA_STATUS_REPOSITORY)).toBeInstanceOf(PrismaWaAccountStatusRepository)
-      expect(moduleRef.get(WA_QR_BOOTSTRAP_REPOSITORY)).toBeInstanceOf(InMemoryWaQrBootstrapRepository)
+      expect(moduleRef.get(WA_QR_BOOTSTRAP_REPOSITORY)).toBeInstanceOf(
+        PrismaWaQrBootstrapRepository,
+      )
       expect(moduleRef.get(WA_SESSION_MANAGER)).toBeInstanceOf(MockSessionManager)
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)
@@ -101,7 +104,9 @@ describe('WaModule', () => {
       expect(moduleRef.get(PrismaWaAccountAdminService)).toBeInstanceOf(PrismaWaAccountAdminService)
       expect(moduleRef.get(WaAccountController)).toBeInstanceOf(WaAccountController)
       expect(moduleRef.get(WaLifecycleQueueService)).toBeInstanceOf(WaLifecycleQueueService)
-      expect(moduleRef.get(WaLifecycleCommandQueueService)).toBeInstanceOf(WaLifecycleCommandQueueService)
+      expect(moduleRef.get(WaLifecycleCommandQueueService)).toBeInstanceOf(
+        WaLifecycleCommandQueueService,
+      )
       expect(moduleRef.get(WA_LIFECYCLE_QUEUE)).toBe(queueMock.queues.at(-1))
       expect(moduleRef.get(WA_LIFECYCLE_WORKER)).toBe(queueMock.workers.at(-1))
       expect(moduleRef.get(WA_OWNER_TTL_MS)).toBe(30_000)
@@ -153,8 +158,7 @@ describe('WaModule', () => {
       expect(queueMock.createWorker).toHaveBeenCalledTimes(1)
 
       const workerProcessor = queueMock.createWorker.mock.calls.at(-1)?.[1] as
-        | ((job: { name: string; data: unknown }) => Promise<unknown>)
-        | undefined
+        ((job: { name: string; data: unknown }) => Promise<unknown>) | undefined
       const jobProcessor = moduleRef.get(WaLifecycleJobProcessor)
       const processSpy = vi
         .spyOn(jobProcessor, 'process')
@@ -197,7 +201,10 @@ describe('WaModule', () => {
       .compile()
 
     try {
-      expect(queueMock.createQueue).toHaveBeenCalledWith(WA_LIFECYCLE_QUEUE_NAME, fakeRedisConnection)
+      expect(queueMock.createQueue).toHaveBeenCalledWith(
+        WA_LIFECYCLE_QUEUE_NAME,
+        fakeRedisConnection,
+      )
       expect(queueMock.createQueue).toHaveBeenCalledTimes(1)
       expect(queueMock.createWorker).toHaveBeenCalledTimes(1)
 
@@ -243,13 +250,24 @@ describe('WaModule', () => {
       path.join(process.cwd(), 'src/wa/prisma-wa-account-admin.service.ts'),
       'utf8',
     )
-    const accountControllerSource = await readFile(path.join(process.cwd(), 'src/wa/wa-account.controller.ts'), 'utf8')
-    const internalGuardSource = await readFile(path.join(process.cwd(), 'src/wa/internal-worker-api.guard.ts'), 'utf8')
+    const qrRepositorySource = await readFile(
+      path.join(process.cwd(), 'src/wa/prisma-wa-qr-bootstrap.repository.ts'),
+      'utf8',
+    )
+    const accountControllerSource = await readFile(
+      path.join(process.cwd(), 'src/wa/wa-account.controller.ts'),
+      'utf8',
+    )
+    const internalGuardSource = await readFile(
+      path.join(process.cwd(), 'src/wa/internal-worker-api.guard.ts'),
+      'utf8',
+    )
     const waSources = [
       moduleSource,
       commandGuardSource,
       commandQueueSource,
       adminServiceSource,
+      qrRepositorySource,
       accountControllerSource,
       internalGuardSource,
     ]
@@ -259,6 +277,9 @@ describe('WaModule', () => {
       expect(source).not.toContain('@whiskeysockets/baileys')
       expect(source).not.toContain('makeWASocket')
       expect(source).not.toContain('useMultiFileAuthState')
+      expect(source).not.toContain('auth_info')
+      expect(source).not.toContain('wa-sessions')
+      expect(source).not.toContain('.session')
     }
 
     const moduleRef = await Test.createTestingModule({ imports: [WaModule] })

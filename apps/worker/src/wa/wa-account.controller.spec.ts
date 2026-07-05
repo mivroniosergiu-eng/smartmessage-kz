@@ -51,35 +51,52 @@ describe('WaAccountController', () => {
   })
 
   it('creates a WaAccount and returns a minimal DTO', async () => {
-    adminService.createAccount.mockResolvedValueOnce(createWaAccount({ teamId: 'team-1', instanceId: 'instance-1' }))
+    adminService.createAccount.mockResolvedValueOnce(
+      createWaAccount({ teamId: 'team-1', instanceId: 'instance-1' }),
+    )
 
-    await expect(controller.createAccount({ teamId: ' team-1 ', instanceId: ' instance-1 ' })).resolves.toMatchObject({
+    await expect(
+      controller.createAccount({ teamId: ' team-1 ', instanceId: ' instance-1 ' }),
+    ).resolves.toMatchObject({
       teamId: 'team-1',
       instanceId: 'instance-1',
       loginType: WaLoginType.BAILEYS,
       status: WaAccountStatus.DISCONNECTED,
     })
-    expect(adminService.createAccount).toHaveBeenCalledWith({ teamId: 'team-1', instanceId: 'instance-1' })
+    expect(adminService.createAccount).toHaveBeenCalledWith({
+      teamId: 'team-1',
+      instanceId: 'instance-1',
+    })
   })
 
   it('maps duplicate instanceId to 409', async () => {
-    adminService.createAccount.mockRejectedValueOnce(new WaAccountAdminDuplicateInstanceError('instance-1'))
+    adminService.createAccount.mockRejectedValueOnce(
+      new WaAccountAdminDuplicateInstanceError('instance-1'),
+    )
 
-    await expect(controller.createAccount({ teamId: 'team-1', instanceId: 'instance-1' })).rejects.toMatchObject({
+    await expect(
+      controller.createAccount({ teamId: 'team-1', instanceId: 'instance-1' }),
+    ).rejects.toMatchObject({
       status: 409,
     })
   })
 
   it('maps missing team to 404', async () => {
-    adminService.createAccount.mockRejectedValueOnce(new WaAccountAdminTeamNotFoundError('missing-team'))
+    adminService.createAccount.mockRejectedValueOnce(
+      new WaAccountAdminTeamNotFoundError('missing-team'),
+    )
 
-    await expect(controller.createAccount({ teamId: 'missing-team', instanceId: 'instance-1' })).rejects.toMatchObject({
+    await expect(
+      controller.createAccount({ teamId: 'missing-team', instanceId: 'instance-1' }),
+    ).rejects.toMatchObject({
       status: 404,
     })
   })
 
   it('rejects invalid create body before calling the service', async () => {
-    await expect(controller.createAccount({ teamId: 'team-1', instanceId: '   ' })).rejects.toMatchObject({
+    await expect(
+      controller.createAccount({ teamId: 'team-1', instanceId: '   ' }),
+    ).rejects.toMatchObject({
       status: 400,
     })
     expect(adminService.createAccount).not.toHaveBeenCalled()
@@ -90,13 +107,17 @@ describe('WaAccountController', () => {
       new WaAccountAdminInvalidInputError('instanceId must be a non-empty string'),
     )
 
-    await expect(controller.createAccount({ teamId: 'team-1', instanceId: 'instance-1' })).rejects.toMatchObject({
+    await expect(
+      controller.createAccount({ teamId: 'team-1', instanceId: 'instance-1' }),
+    ).rejects.toMatchObject({
       status: 400,
     })
   })
 
   it('returns an existing WaAccount and maps missing account to 404', async () => {
-    adminService.getAccount.mockResolvedValueOnce(createWaAccount({ teamId: 'team-1', instanceId: 'instance-1' }))
+    adminService.getAccount.mockResolvedValueOnce(
+      createWaAccount({ teamId: 'team-1', instanceId: 'instance-1' }),
+    )
     adminService.getAccount.mockResolvedValueOnce(null)
 
     await expect(controller.getAccount(' instance-1 ')).resolves.toMatchObject({
@@ -136,7 +157,9 @@ describe('WaAccountController', () => {
   })
 
   it('maps missing lifecycle command target to 404', async () => {
-    commandQueue.enqueueStart.mockRejectedValueOnce(new WaAccountCommandTargetNotFoundError('missing-instance'))
+    commandQueue.enqueueStart.mockRejectedValueOnce(
+      new WaAccountCommandTargetNotFoundError('missing-instance'),
+    )
 
     await expect(controller.startAccount('missing-instance')).rejects.toMatchObject({ status: 404 })
   })
@@ -144,7 +167,9 @@ describe('WaAccountController', () => {
   it('maps missing QR bootstrap account to 404', async () => {
     adminService.getAccount.mockResolvedValueOnce(null)
 
-    await expect(controller.getQrBootstrapState('missing-instance')).rejects.toMatchObject({ status: 404 })
+    await expect(controller.getQrBootstrapState('missing-instance')).rejects.toMatchObject({
+      status: 404,
+    })
   })
 
   it('returns account status when QR bootstrap has no QR yet', async () => {
@@ -184,6 +209,29 @@ describe('WaAccountController', () => {
       status: 'qr_pending',
       qrCode: 'qr-payload',
       expiresAt: '2999-07-03T10:01:00.000Z',
+    })
+  })
+
+  it('falls back to account status when the latest QR bootstrap event is expired', async () => {
+    adminService.getAccount.mockResolvedValueOnce(
+      createWaAccount({
+        teamId: 'team-1',
+        instanceId: 'instance-expired-qr',
+        status: WaAccountStatus.CONNECTING,
+      }),
+    )
+    await qrBootstrapRepository.store(
+      createWaQrPendingEvent({
+        instanceId: 'instance-expired-qr',
+        qrCode: 'expired-qr-payload',
+        createdAt: new Date('2026-07-03T10:00:00.000Z'),
+        expiresAt: new Date('2026-07-03T10:01:00.000Z'),
+      }),
+    )
+
+    await expect(controller.getQrBootstrapState('instance-expired-qr')).resolves.toEqual({
+      instanceId: 'instance-expired-qr',
+      status: 'connecting',
     })
   })
 
@@ -298,7 +346,9 @@ function createWaAccount(input: {
 }
 
 interface AdminServiceMock {
-  createAccount: ReturnType<typeof vi.fn<(input: { teamId: string; instanceId: string }) => Promise<WaAccount>>>
+  createAccount: ReturnType<
+    typeof vi.fn<(input: { teamId: string; instanceId: string }) => Promise<WaAccount>>
+  >
   getAccount: ReturnType<typeof vi.fn<(instanceId: string) => Promise<WaAccount | null>>>
   listAccounts: ReturnType<typeof vi.fn<(teamId: string) => Promise<WaAccount[]>>>
 }
