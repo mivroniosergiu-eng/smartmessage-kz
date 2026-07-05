@@ -1,4 +1,5 @@
 import { Inject, Injectable, Module, type OnApplicationShutdown } from '@nestjs/common'
+import { prisma } from '@smartmessage/db'
 import {
   WA_LIFECYCLE_QUEUE_NAME,
   createConnection,
@@ -76,6 +77,13 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
   }
 }
 
+@Injectable()
+class WaPrismaShutdown implements OnApplicationShutdown {
+  async onApplicationShutdown(): Promise<void> {
+    await prisma.$disconnect()
+  }
+}
+
 @Module({
   controllers: [WaAccountController],
   providers: [
@@ -92,6 +100,7 @@ class WaLifecycleQueueShutdown implements OnApplicationShutdown {
       useFactory: () => createConnection(),
     },
     WaRedisConnectionShutdown,
+    WaPrismaShutdown,
     {
       provide: WA_OWNER_REGISTRY,
       useFactory: (redis: WaRedisConnection): OwnerRegistry => new RedisOwnerRegistry(redis),

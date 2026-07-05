@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { Test } from '@nestjs/testing'
+import { prisma } from '@smartmessage/db'
 import {
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
@@ -72,8 +73,11 @@ const originalWaWorkerId = process.env.WA_WORKER_ID
 const originalWaOwnerTtlMs = process.env.WA_OWNER_TTL_MS
 
 describe('WaModule', () => {
+  const prismaDisconnectSpy = vi.spyOn(prisma, '$disconnect').mockResolvedValue(undefined)
+
   afterEach(() => {
     restoreEnv()
+    prismaDisconnectSpy.mockClear()
     queueMock.createQueue.mockClear()
     queueMock.createWorker.mockClear()
     queueMock.queues.length = 0
@@ -231,6 +235,17 @@ describe('WaModule', () => {
     await moduleRef.close()
 
     expect(queue?.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('disconnects the shared Prisma client on application shutdown', async () => {
+    const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
+      .overrideProvider(WA_REDIS_CONNECTION)
+      .useValue(createFakeRedisConnection())
+      .compile()
+
+    await moduleRef.close()
+
+    expect(prismaDisconnectSpy).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the worker wiring on the mock session manager without Baileys or real sockets', async () => {

@@ -28,7 +28,7 @@
   - 9 test files / 50 tests.
 - `pnpm --filter @smartmessage/worker test`
   - Result: passed.
-  - 12 test files / 80 tests, including `prisma-wa-qr-bootstrap.repository.spec.ts`.
+  - 12 test files / 81 tests, including `prisma-wa-qr-bootstrap.repository.spec.ts` and shared Prisma shutdown coverage.
 - `pnpm --filter @smartmessage/worker lint`
   - Result: passed.
 - `pnpm typecheck`
@@ -63,4 +63,4 @@
 - Runtime code defect: none found by migration/runtime validation.
 - Infrastructure blocker from the previous run is resolved locally: Postgres `localhost:5433` and Redis `localhost:6380` are reachable.
 - Non-code gate issue: `prisma-erd-generator` emitted trailing whitespace for new ERD lines; `packages/db/ERD.md` was mechanically normalized so `git diff --check` passes.
-
+- CodeRabbit follow-up: added a worker shutdown hook for the shared Prisma singleton and a module test that `moduleRef.close()` calls `$disconnect()`.
