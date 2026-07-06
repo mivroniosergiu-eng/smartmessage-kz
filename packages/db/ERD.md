@@ -175,6 +175,14 @@ SEND_ERROR SEND_ERROR
     }
 
 
+  "WaAuthState" {
+    String id "🗝️"
+    Json payload
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
   "WaSession" {
     String id "🗝️"
     String status
@@ -269,8 +277,10 @@ SEND_ERROR SEND_ERROR
     "WaAccount" o|--|| "WaAccountStatus" : "enum:status"
     "WaAccount" o{--}o "WaSession" : "waSession"
     "WaAccount" o{--}o "WaQrBootstrapEvent" : "qrBootstrapEvent"
+    "WaAccount" o{--}o "WaAuthState" : "authState"
     "WaAccount" o{--}o "MessageLog" : "messageLogs"
     "WaQrBootstrapEvent" o|--|| "WaAccount" : "waAccount"
+    "WaAuthState" o|--|| "WaAccount" : "waAccount"
     "WaSession" o|--|| "WaAccount" : "waAccount"
     "WaSession" o|--|| "Team" : "team"
     "Campaign" o|--|| "Team" : "team"

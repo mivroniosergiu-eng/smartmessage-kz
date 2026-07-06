@@ -164,6 +164,7 @@ model WaAccount {
   restrictedUntil DateTime?
   waSession       WaSession?
   qrBootstrapEvent WaQrBootstrapEvent?
+  authState       WaAuthState?
   messageLogs     MessageLog[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
@@ -178,6 +179,15 @@ model WaQrBootstrapEvent {
   qrCode     String
   createdAt  DateTime  @default(now())
   expiresAt  DateTime
+}
+
+model WaAuthState {
+  id         String    @id @default(cuid())
+  instanceId String    @unique
+  waAccount  WaAccount @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+  payload    Json
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 }
 
 model WaSession {
