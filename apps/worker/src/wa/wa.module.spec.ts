@@ -21,6 +21,7 @@ import {
   WA_SESSION_MANAGER,
   WA_STATUS_REPOSITORY,
   WA_QR_BOOTSTRAP_REPOSITORY,
+  WA_AUTH_STATE_STORE,
   WA_WORKER_ID,
 } from './wa.tokens'
 import { WaModule } from './wa.module'
@@ -30,6 +31,7 @@ import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
 import { PrismaWaQrBootstrapRepository } from './prisma-wa-qr-bootstrap.repository'
+import { PrismaWaAuthStateRepository } from './prisma-wa-auth-state.repository'
 import { WaAccountController } from './wa-account.controller'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
@@ -99,6 +101,7 @@ describe('WaModule', () => {
       expect(moduleRef.get(WA_QR_BOOTSTRAP_REPOSITORY)).toBeInstanceOf(
         PrismaWaQrBootstrapRepository,
       )
+      expect(moduleRef.get(WA_AUTH_STATE_STORE)).toBeInstanceOf(PrismaWaAuthStateRepository)
       expect(moduleRef.get(WA_SESSION_MANAGER)).toBeInstanceOf(MockSessionManager)
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)
@@ -269,6 +272,10 @@ describe('WaModule', () => {
       path.join(process.cwd(), 'src/wa/prisma-wa-qr-bootstrap.repository.ts'),
       'utf8',
     )
+    const authStateRepositorySource = await readFile(
+      path.join(process.cwd(), 'src/wa/prisma-wa-auth-state.repository.ts'),
+      'utf8',
+    )
     const accountControllerSource = await readFile(
       path.join(process.cwd(), 'src/wa/wa-account.controller.ts'),
       'utf8',
@@ -283,6 +290,7 @@ describe('WaModule', () => {
       commandQueueSource,
       adminServiceSource,
       qrRepositorySource,
+      authStateRepositorySource,
       accountControllerSource,
       internalGuardSource,
     ]

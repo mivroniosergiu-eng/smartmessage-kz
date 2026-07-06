@@ -16,6 +16,7 @@ import {
   RedisOwnerRegistry,
   WaSessionLifecycleService,
   type OwnerRegistry,
+  type WaAuthStateStore,
   type SessionManager,
   type WaAccountStatusRepository,
   type WaQrBootstrapRepository,
@@ -24,6 +25,7 @@ import {
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
 import { PrismaWaQrBootstrapRepository } from './prisma-wa-qr-bootstrap.repository'
+import { PrismaWaAuthStateRepository } from './prisma-wa-auth-state.repository'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
 import { WaAccountController } from './wa-account.controller'
@@ -36,6 +38,7 @@ import {
   WA_SESSION_MANAGER,
   WA_STATUS_REPOSITORY,
   WA_QR_BOOTSTRAP_REPOSITORY,
+  WA_AUTH_STATE_STORE,
   WA_WORKER_ID,
 } from './wa.tokens'
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
@@ -119,6 +122,10 @@ class WaPrismaShutdown implements OnApplicationShutdown {
       useFactory: (): WaQrBootstrapRepository => new PrismaWaQrBootstrapRepository(),
     },
     {
+      provide: WA_AUTH_STATE_STORE,
+      useFactory: (): WaAuthStateStore => new PrismaWaAuthStateRepository(),
+    },
+    {
       provide: WA_SESSION_LIFECYCLE,
       useFactory: (
         workerId: string,
@@ -188,6 +195,7 @@ class WaPrismaShutdown implements OnApplicationShutdown {
     WA_SESSION_MANAGER,
     WA_STATUS_REPOSITORY,
     WA_QR_BOOTSTRAP_REPOSITORY,
+    WA_AUTH_STATE_STORE,
     WA_SESSION_LIFECYCLE,
     WaLifecycleCommandService,
     WaLifecycleJobProcessor,
