@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@smartmessage/shared": "workspace:*",
+    "@whiskeysockets/baileys": "7.0.0-rc13",
     "ioredis": "5.11.1"
   },
   "devDependencies": {

@@ -5,6 +5,12 @@ packages:
 overrides:
   ioredis: 5.11.1
 
+packageExtensions:
+  '@whiskeysockets/baileys@7.0.0-rc13':
+    peerDependenciesMeta:
+      sharp:
+        optional: true
+
 onlyBuiltDependencies:
   - esbuild
   - prisma
@@ -12,12 +18,15 @@ onlyBuiltDependencies:
   - '@prisma/engines'
 
 ignoredBuiltDependencies:
+  - '@whiskeysockets/baileys'
+  - protobufjs
   - puppeteer
   - unrs-resolver
 
 verifyDepsBeforeRun: false
 
 allowBuilds:
+  '@whiskeysockets/baileys': false
   '@nestjs/core': true
   '@prisma/client': true
   '@prisma/engines': true
@@ -26,4 +35,5 @@ allowBuilds:
   msgpackr-extract: true
   prisma: true
   puppeteer: false
+  protobufjs: false
   unrs-resolver: false

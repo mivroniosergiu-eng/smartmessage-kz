@@ -2,14 +2,9 @@
   "name": "smartmessage-kz",
   "private": true,
   "version": "0.0.0",
-  "packageManager": "pnpm@9.15.9",
+  "packageManager": "pnpm@10.34.0",
   "engines": {
     "node": ">=20"
-  },
-  "pnpm": {
-    "overrides": {
-      "ioredis": "5.11.1"
-    }
   },
   "scripts": {
     "build": "pnpm -r build",
