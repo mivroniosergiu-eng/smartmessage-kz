@@ -38,17 +38,24 @@ describe('wa mocks', () => {
     const sources = await readProductionSources(path.dirname(fileURLToPath(import.meta.url)))
 
     for (const source of sources) {
+      const isBaileysConnector = source.filePath.endsWith(`${path.sep}baileys-connector.ts`)
       const importDeclarations = source.contents
         .split(/\r?\n/)
         .filter((line) => /^\s*import\s/.test(line))
         .join('\n')
 
-      expect(importDeclarations, source.filePath).not.toMatch(/@whiskeysockets\/baileys/)
+      if (isBaileysConnector) {
+        expect(source.contents, source.filePath).toMatch(/@whiskeysockets\/baileys/)
+        expect(source.contents, source.filePath).toContain('makeWASocket')
+      } else {
+        expect(source.contents, source.filePath).not.toMatch(/@whiskeysockets\/baileys/)
+        expect(source.contents, source.filePath).not.toContain('makeWASocket')
+      }
+
       expect(importDeclarations, source.filePath).not.toMatch(
         /(?:node:)?(?:net|tls|http|https)|['"]ws['"]/,
       )
       expect(source.contents, source.filePath).not.toMatch(/\bfetch\s*\(/)
-      expect(source.contents, source.filePath).not.toContain('makeWASocket')
       expect(source.contents, source.filePath).not.toContain('useMultiFileAuthState')
       expect(source.contents, source.filePath).not.toContain('auth_info')
       expect(source.contents, source.filePath).not.toContain('wa-sessions')

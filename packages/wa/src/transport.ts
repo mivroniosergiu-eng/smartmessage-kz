@@ -57,6 +57,11 @@ export interface WaTransportBannedEvent {
   reason?: string
 }
 
+export interface WaTransportErrorEvent {
+  instanceId: string
+  error: unknown
+}
+
 export interface WaTransportCallbacks {
   onQr?: (event: WaTransportQrEvent) => Promise<void> | void
   onConnected?: (event: WaTransportConnectedEvent) => Promise<void> | void
@@ -64,6 +69,7 @@ export interface WaTransportCallbacks {
   onLoggedOut?: (event: WaTransportLoggedOutEvent) => Promise<void> | void
   onRestricted?: (event: WaTransportRestrictedEvent) => Promise<void> | void
   onBanned?: (event: WaTransportBannedEvent) => Promise<void> | void
+  onError?: (event: WaTransportErrorEvent) => Promise<void> | void
 }
 
 export interface WaTransportFactory {
