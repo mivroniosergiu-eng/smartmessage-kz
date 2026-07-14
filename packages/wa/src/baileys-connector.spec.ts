@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InMemoryWaAuthStateStore } from './auth-state'
 import { BaileysAuthStateMapperError } from './baileys-auth-state-mapper'
 import { BaileysSocketTransportConnector } from './baileys-connector'
-import type { WaTransportCallbacks } from './transport'
+import {
+  WaTransportAlreadyConnectedError,
+  WaTransportNotConnectedError,
+  type WaTransportCallbacks,
+} from './transport'
 
 const baileysMock = vi.hoisted(() => {
   const makeWASocket = vi.fn()
@@ -68,6 +72,145 @@ describe('BaileysSocketTransportConnector', () => {
         printQRInTerminal: false,
       }),
     )
+  })
+
+  it('rejects a second active socket for the same normalized instance id', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await connector.connect({ instanceId: ' instance-owned ' })
+
+    await expect(connector.connect({ instanceId: 'instance-owned' })).rejects.toBeInstanceOf(
+      WaTransportAlreadyConnectedError,
+    )
+    expect(baileysMock.makeWASocket).toHaveBeenCalledOnce()
+  })
+
+  it('reserves the normalized instance id while the first socket is opening', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValue(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    const firstConnect = connector.connect({ instanceId: ' instance-opening ' })
+    const competingConnect = connector.connect({ instanceId: 'instance-opening' })
+
+    await expect(competingConnect).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+    await expect(firstConnect).resolves.toMatchObject({ instanceId: 'instance-opening' })
+    expect(baileysMock.makeWASocket).toHaveBeenCalledOnce()
+  })
+
+  it('ends the active socket, preserves auth-state, and removes it from the registry on close', async () => {
+    const firstSocket = createFakeBaileysSocket()
+    const secondSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-close', { creds: { registered: true }, keys: {} })
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: ' instance-close ' })
+    await expect(connector.closeTransport('instance-close')).resolves.toEqual({
+      instanceId: 'instance-close',
+      status: 'disconnected',
+      hasAuthState: true,
+      logoutCount: 0,
+      lastDisconnectReason: 'connection_closed',
+    })
+
+    expect(firstSocket.end).toHaveBeenCalledOnce()
+    expect(firstSocket.end).toHaveBeenCalledWith(undefined)
+    expect(firstSocket.logout).not.toHaveBeenCalled()
+    await expect(connector.connect({ instanceId: 'instance-close' })).resolves.toMatchObject({
+      status: 'connecting',
+    })
+    expect(baileysMock.makeWASocket).toHaveBeenCalledTimes(2)
+  })
+
+  it('logs out the active socket, clears auth-state, and removes it from the registry', async () => {
+    const firstSocket = createFakeBaileysSocket()
+    const secondSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-logout', { creds: { registered: true }, keys: {} })
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: ' instance-logout ' })
+    await expect(connector.logout('instance-logout')).resolves.toEqual({
+      instanceId: 'instance-logout',
+      status: 'logged_out',
+      hasAuthState: false,
+      logoutCount: 1,
+      lastDisconnectReason: 'logged_out',
+    })
+
+    expect(firstSocket.logout).toHaveBeenCalledOnce()
+    expect(firstSocket.end).not.toHaveBeenCalled()
+    await expect(store.has('instance-logout')).resolves.toBe(false)
+    await expect(connector.connect({ instanceId: 'instance-logout' })).resolves.toMatchObject({
+      status: 'connecting',
+      hasAuthState: false,
+    })
+    expect(baileysMock.makeWASocket).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects close and logout before connect with a domain error', async () => {
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await expect(connector.closeTransport('instance-missing')).rejects.toBeInstanceOf(
+      WaTransportNotConnectedError,
+    )
+    await expect(connector.logout('instance-missing')).rejects.toBeInstanceOf(
+      WaTransportNotConnectedError,
+    )
+    expect(baileysMock.makeWASocket).not.toHaveBeenCalled()
+  })
+
+  it('rejects repeated close and repeated logout deterministically', async () => {
+    const closeSocket = createFakeBaileysSocket()
+    const logoutSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(closeSocket).mockReturnValueOnce(logoutSocket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await connector.connect({ instanceId: 'instance-repeat-close' })
+    await connector.closeTransport('instance-repeat-close')
+    await expect(connector.closeTransport('instance-repeat-close')).rejects.toBeInstanceOf(
+      WaTransportNotConnectedError,
+    )
+
+    await connector.connect({ instanceId: 'instance-repeat-logout' })
+    await connector.logout('instance-repeat-logout')
+    await expect(connector.logout('instance-repeat-logout')).rejects.toBeInstanceOf(
+      WaTransportNotConnectedError,
+    )
+  })
+
+  it('reports a close failure, rejects predictably, and does not leak an unhandled rejection', async () => {
+    const socket = createFakeBaileysSocket()
+    const closeError = new Error('socket end failed')
+    socket.end.mockRejectedValueOnce(closeError)
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const onUnhandledRejection = vi.fn()
+    process.on('unhandledRejection', onUnhandledRejection)
+    const callbacks: WaTransportCallbacks = {
+      onError: vi.fn(),
+    }
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    try {
+      await connector.connect({ instanceId: 'instance-close-error', callbacks })
+
+      await expect(connector.closeTransport('instance-close-error')).rejects.toBe(closeError)
+      expect(callbacks.onError).toHaveBeenCalledWith({
+        instanceId: 'instance-close-error',
+        error: closeError,
+      })
+      expect(onUnhandledRejection).not.toHaveBeenCalled()
+      await expect(connector.closeTransport('instance-close-error')).rejects.toBeInstanceOf(
+        WaTransportNotConnectedError,
+      )
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection)
+    }
   })
 
   it('emits QR events with instance id, QR payload, and deterministic expiry', async () => {
@@ -376,6 +519,7 @@ describe('BaileysSocketTransportConnector', () => {
       },
     })
 
+    await connector.closeTransport('instance-binary')
     await connector.connect({ instanceId: 'instance-binary' })
     const secondAuth = baileysMock.makeWASocket.mock.calls[1]?.[0].auth
     await expect(secondAuth.keys.get('session', ['contact'])).resolves.toEqual({
@@ -400,6 +544,8 @@ type FakeBaileysListener = (payload: never) => Promise<void> | void
 
 function createFakeBaileysSocket(): {
   ev: { on: (event: FakeBaileysEvent, listener: FakeBaileysListener) => void }
+  end: ReturnType<typeof vi.fn>
+  logout: ReturnType<typeof vi.fn>
   emit: (event: FakeBaileysEvent, payload: unknown) => Promise<void>
 } {
   const listeners = new Map<FakeBaileysEvent, FakeBaileysListener[]>()
@@ -410,6 +556,8 @@ function createFakeBaileysSocket(): {
         listeners.set(event, [...(listeners.get(event) ?? []), listener])
       },
     },
+    end: vi.fn(async () => undefined),
+    logout: vi.fn(async () => undefined),
     emit: async (event, payload) => {
       for (const listener of listeners.get(event) ?? []) {
         await listener(payload as never)

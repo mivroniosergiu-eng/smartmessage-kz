@@ -4,6 +4,8 @@ export type WaTransportSession = SessionState
 
 export type WaTransportErrorCode =
   | 'transport_unavailable'
+  | 'already_connected'
+  | 'not_connected'
   | 'connect_failed'
   | 'disconnected'
   | 'logged_out'
@@ -61,6 +63,8 @@ export interface WaTransportCallbacks {
 
 export interface WaTransportFactory {
   connect(instanceId: string, callbacks?: WaTransportCallbacks): Promise<WaTransportSession>
+  closeTransport(instanceId: string): Promise<WaTransportSession>
+  logout(instanceId: string): Promise<WaTransportSession>
 }
 
 export class WaTransportUnavailableError extends Error {
@@ -69,5 +73,23 @@ export class WaTransportUnavailableError extends Error {
   constructor(message = 'WA transport connector is not configured') {
     super(message)
     this.name = 'WaTransportUnavailableError'
+  }
+}
+
+export class WaTransportAlreadyConnectedError extends Error {
+  readonly code = 'already_connected' satisfies WaTransportErrorCode
+
+  constructor(readonly instanceId: string) {
+    super(`WA transport already has an active socket for instance ${instanceId}`)
+    this.name = 'WaTransportAlreadyConnectedError'
+  }
+}
+
+export class WaTransportNotConnectedError extends Error {
+  readonly code = 'not_connected' satisfies WaTransportErrorCode
+
+  constructor(readonly instanceId: string) {
+    super(`WA transport has no active socket for instance ${instanceId}`)
+    this.name = 'WaTransportNotConnectedError'
   }
 }

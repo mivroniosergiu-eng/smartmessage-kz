@@ -5,6 +5,7 @@ import makeWASocket, {
   type SignalDataSet,
   type SignalDataTypeMap,
   type UserFacingSocketConfig,
+  type WASocket,
 } from '@whiskeysockets/baileys'
 
 import type { WaAuthStateJsonValue, WaAuthStateStore } from './auth-state'
@@ -15,6 +16,12 @@ import {
 } from './baileys-auth-state-mapper'
 import type { BaileysTransportConnectInput, BaileysTransportConnector } from './baileys-transport-adapter'
 import type { SessionState, WaDisconnectReason } from './session'
+import {
+  WaTransportAlreadyConnectedError,
+  WaTransportNotConnectedError,
+  type WaTransportCallbacks,
+  type WaTransportSession,
+} from './transport'
 
 const DEFAULT_QR_TTL_MS = 60_000
 const BINARY_JSON_MARKER = '__smartmessageWaBinary'
@@ -25,7 +32,14 @@ export interface BaileysSocketTransportConnectorOptions {
   socketConfig?: Omit<Partial<UserFacingSocketConfig>, 'auth' | 'printQRInTerminal'>
 }
 
+interface ActiveBaileysTransport {
+  socket: WASocket
+  callbacks?: WaTransportCallbacks
+}
+
 export class BaileysSocketTransportConnector implements BaileysTransportConnector {
+  private readonly activeTransports = new Map<string, ActiveBaileysTransport>()
+  private readonly openingTransports = new Set<string>()
   private readonly now: () => Date
   private readonly qrTtlMs: number
   private readonly socketConfig: Omit<Partial<UserFacingSocketConfig>, 'auth' | 'printQRInTerminal'>
@@ -41,28 +55,84 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
 
   async connect(input: BaileysTransportConnectInput): Promise<SessionState> {
     const instanceId = normalizeInstanceId(input.instanceId)
-    const persistedState = await readBaileysAuthState(instanceId, this.authStateStore)
-    const auth = createStoreBackedAuthState(instanceId, persistedState, this.authStateStore)
-    const socket = makeWASocket({
-      ...this.socketConfig,
-      auth,
-      printQRInTerminal: false,
-    })
+    if (this.activeTransports.has(instanceId) || this.openingTransports.has(instanceId)) {
+      throw new WaTransportAlreadyConnectedError(instanceId)
+    }
+    this.openingTransports.add(instanceId)
 
-    socket.ev.on('creds.update', (update) => {
-      this.handleAsyncEvent(instanceId, input.callbacks, () => auth.mergeCreds(update))
-    })
-    socket.ev.on('connection.update', (update) => {
-      this.handleAsyncEvent(instanceId, input.callbacks, () =>
-        this.handleConnectionUpdate(instanceId, update, input.callbacks),
-      )
-    })
+    try {
+      const persistedState = await readBaileysAuthState(instanceId, this.authStateStore)
+      const hasAuthState = await this.authStateStore.has(instanceId)
+      const auth = createStoreBackedAuthState(instanceId, persistedState, this.authStateStore)
+      const socket = makeWASocket({
+        ...this.socketConfig,
+        auth,
+        printQRInTerminal: false,
+      })
+
+      socket.ev.on('creds.update', (update) => {
+        this.handleAsyncEvent(instanceId, input.callbacks, () => auth.mergeCreds(update))
+      })
+      socket.ev.on('connection.update', (update) => {
+        this.handleAsyncEvent(instanceId, input.callbacks, () =>
+          this.handleConnectionUpdate(instanceId, socket, update, input.callbacks),
+        )
+      })
+      this.activeTransports.set(instanceId, { socket, callbacks: input.callbacks })
+
+      return {
+        instanceId,
+        status: 'connecting',
+        hasAuthState,
+        logoutCount: 0,
+      }
+    } finally {
+      this.openingTransports.delete(instanceId)
+    }
+  }
+
+  async closeTransport(instanceId: string): Promise<WaTransportSession> {
+    const normalizedInstanceId = normalizeInstanceId(instanceId)
+    const active = this.requireActiveTransport(normalizedInstanceId)
+
+    try {
+      await active.socket.end(undefined)
+    } catch (error: unknown) {
+      await this.reportError(normalizedInstanceId, active.callbacks, error)
+      throw error
+    } finally {
+      this.removeActiveTransport(normalizedInstanceId, active.socket)
+    }
 
     return {
-      instanceId,
-      status: 'connecting',
-      hasAuthState: await this.authStateStore.has(instanceId),
+      instanceId: normalizedInstanceId,
+      status: 'disconnected',
+      hasAuthState: await this.authStateStore.has(normalizedInstanceId),
       logoutCount: 0,
+      lastDisconnectReason: 'connection_closed',
+    }
+  }
+
+  async logout(instanceId: string): Promise<WaTransportSession> {
+    const normalizedInstanceId = normalizeInstanceId(instanceId)
+    const active = this.requireActiveTransport(normalizedInstanceId)
+
+    try {
+      await active.socket.logout()
+      await this.authStateStore.clear(normalizedInstanceId)
+    } catch (error: unknown) {
+      await this.reportError(normalizedInstanceId, active.callbacks, error)
+      throw error
+    } finally {
+      this.removeActiveTransport(normalizedInstanceId, active.socket)
+    }
+
+    return {
+      instanceId: normalizedInstanceId,
+      status: 'logged_out',
+      hasAuthState: false,
+      logoutCount: 1,
+      lastDisconnectReason: 'logged_out',
     }
   }
 
@@ -75,22 +145,44 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       try {
         await handler()
       } catch (error: unknown) {
-        try {
-          if (callbacks?.onError) {
-            await callbacks.onError({ instanceId, error })
-            return
-          }
-
-          console.error(`[wa:${instanceId}] unhandled transport error`, error)
-        } catch {
-          // Error reporting must not create an unhandled rejection.
-        }
+        await this.reportError(instanceId, callbacks, error)
       }
     })()
   }
 
+  private async reportError(
+    instanceId: string,
+    callbacks: BaileysTransportConnectInput['callbacks'],
+    error: unknown,
+  ): Promise<void> {
+    try {
+      if (callbacks?.onError) {
+        await callbacks.onError({ instanceId, error })
+        return
+      }
+
+      console.error(`[wa:${instanceId}] unhandled transport error`, error)
+    } catch {
+      // Error reporting must not create an unhandled rejection.
+    }
+  }
+
+  private requireActiveTransport(instanceId: string): ActiveBaileysTransport {
+    const active = this.activeTransports.get(instanceId)
+    if (!active) throw new WaTransportNotConnectedError(instanceId)
+
+    return active
+  }
+
+  private removeActiveTransport(instanceId: string, socket: WASocket): void {
+    if (this.activeTransports.get(instanceId)?.socket === socket) {
+      this.activeTransports.delete(instanceId)
+    }
+  }
+
   private async handleConnectionUpdate(
     instanceId: string,
+    socket: WASocket,
     update: BaileysEventMap['connection.update'],
     callbacks: BaileysTransportConnectInput['callbacks'],
   ): Promise<void> {
@@ -116,6 +208,8 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     }
 
     if (update.connection !== 'close') return
+
+    this.removeActiveTransport(instanceId, socket)
 
     const reason = disconnectReasonFromStatusCode(
       getDisconnectStatusCode(update.lastDisconnect?.error),

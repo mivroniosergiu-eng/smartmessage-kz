@@ -12,6 +12,8 @@ export interface BaileysTransportConnectInput {
 
 export interface BaileysTransportConnector {
   connect(input: BaileysTransportConnectInput): Promise<WaTransportSession>
+  closeTransport(instanceId: string): Promise<WaTransportSession>
+  logout(instanceId: string): Promise<WaTransportSession>
 }
 
 export class BaileysTransportAdapter implements WaTransportFactory {
@@ -29,6 +31,26 @@ export class BaileysTransportAdapter implements WaTransportFactory {
     }
 
     return this.connector.connect({ instanceId: normalizedInstanceId, callbacks })
+  }
+
+  async closeTransport(instanceId: string): Promise<WaTransportSession> {
+    const normalizedInstanceId = normalizeNonEmptyString(instanceId, 'instanceId')
+    return this.requireConnector().closeTransport(normalizedInstanceId)
+  }
+
+  async logout(instanceId: string): Promise<WaTransportSession> {
+    const normalizedInstanceId = normalizeNonEmptyString(instanceId, 'instanceId')
+    return this.requireConnector().logout(normalizedInstanceId)
+  }
+
+  private requireConnector(): BaileysTransportConnector {
+    if (!this.connector) {
+      throw new WaTransportUnavailableError(
+        'Baileys transport connector is not configured; skeleton cannot manage a real connection',
+      )
+    }
+
+    return this.connector
   }
 }
 
