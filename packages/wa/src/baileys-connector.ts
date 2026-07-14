@@ -71,10 +71,22 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     callbacks: BaileysTransportConnectInput['callbacks'],
     handler: () => Promise<void>,
   ): void {
-    void Promise.resolve()
-      .then(handler)
-      .catch((error: unknown) => callbacks?.onError?.({ instanceId, error }))
-      .catch(() => undefined)
+    void (async () => {
+      try {
+        await handler()
+      } catch (error: unknown) {
+        try {
+          if (callbacks?.onError) {
+            await callbacks.onError({ instanceId, error })
+            return
+          }
+
+          console.error(`[wa:${instanceId}] unhandled transport error`, error)
+        } catch {
+          // Error reporting must not create an unhandled rejection.
+        }
+      }
+    })()
   }
 
   private async handleConnectionUpdate(

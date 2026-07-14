@@ -6,12 +6,14 @@
 ## Автотесты
 - TDD red: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — 4 новых error-routing теста failed; Vitest зафиксировал unhandled rejections из QR, connected и auth persistence paths.
 - TDD green: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — passed, 11/11.
-- Команда прогона: `pnpm --filter @smartmessage/wa test` с изолированным Redis через `REDIS_URL` — passed, 79/79.
+- Review-fix TDD red: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — 2/14 failed, оба на отсутствующем fallback log при rejected async handlers без `onError`.
+- Review-fix TDD green: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — passed, 14/14.
+- Команда прогона: `pnpm --filter @smartmessage/wa test` — passed, 82/82.
 - Команда прогона: `pnpm --filter @smartmessage/wa lint` — passed.
 - Команда прогона: `pnpm --filter @smartmessage/worker test` — passed, 86/86.
 - Команда прогона: `pnpm --filter @smartmessage/worker lint` — passed.
 - Команда прогона: `pnpm typecheck` — passed.
-- Команда прогона: `pnpm test` с изолированным Redis через `REDIS_URL` — passed, 231/231 workspace tests.
+- Команда прогона: `pnpm test` — passed, 234/234 workspace tests.
 - Команда прогона: `pnpm build` — passed.
 - Package manager: `pnpm --version` — `10.34.0`; команда завершилась без предупреждения об ignored root `pnpm` settings.
 - Install guard: `pnpm install --frozen-lockfile` — passed; workspace `packageExtensions` и build-script policy согласованы с lockfile.
@@ -26,6 +28,10 @@
   - Auth-state reads, key writes, and creds updates go through `WaAuthStateStore`.
   - Rejected QR and connected callbacks report the original error through neutral `onError`.
   - Rejected `creds.update` persistence reports through the same error path.
+  - Missing `onError` falls back to an error log containing `instanceId` and the original error.
+  - Rejected `onError` and a throwing fallback logger do not escape as unhandled rejections.
+  - Baileys `badSession` and `connectionReplaced` are covered as conservative `transient` disconnects.
+  - Unsupported `onRestricted`/`onBanned` transport callbacks were removed; restricted/banned account status remains owned by the repository/lifecycle layer.
   - Rejected `onError` does not escape as an unhandled rejection in the test model.
   - Binary Baileys key material roundtrips through a JSON-safe auth-state envelope.
   - Malformed stored auth-state fails before socket factory creation.

@@ -11,9 +11,15 @@ const baileysMock = vi.hoisted(() => {
   return {
     DisconnectReason: {
       connectionClosed: 428,
+      connectionLost: 408,
+      connectionReplaced: 440,
       loggedOut: 401,
+      badSession: 500,
       restartRequired: 515,
       timedOut: 408,
+      multideviceMismatch: 411,
+      forbidden: 403,
+      unavailableService: 503,
     },
     makeWASocket,
   }
@@ -162,6 +168,40 @@ describe('BaileysSocketTransportConnector', () => {
     expect(callbacks.onLoggedOut).toHaveBeenCalledWith({ instanceId: 'instance-events' })
   })
 
+  it('maps unclassified Baileys session failures to transient disconnects', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const callbacks: WaTransportCallbacks = {
+      onDisconnected: vi.fn(),
+    }
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await connector.connect({ instanceId: 'instance-session-failures', callbacks })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: {
+        error: createBaileysCloseError(baileysMock.DisconnectReason.badSession),
+        date: new Date(),
+      },
+    })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: {
+        error: createBaileysCloseError(baileysMock.DisconnectReason.connectionReplaced),
+        date: new Date(),
+      },
+    })
+
+    expect(callbacks.onDisconnected).toHaveBeenNthCalledWith(1, {
+      instanceId: 'instance-session-failures',
+      reason: 'transient',
+    })
+    expect(callbacks.onDisconnected).toHaveBeenNthCalledWith(2, {
+      instanceId: 'instance-session-failures',
+      reason: 'transient',
+    })
+  })
+
   it('reads and writes auth-state through WaAuthStateStore', async () => {
     const socket = createFakeBaileysSocket()
     baileysMock.makeWASocket.mockReturnValueOnce(socket)
@@ -223,6 +263,33 @@ describe('BaileysSocketTransportConnector', () => {
     })
   })
 
+  it('logs rejected creds.update persistence without onError and does not leak a rejection', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    const error = new Error('auth persistence failed')
+    vi.spyOn(store, 'write').mockRejectedValueOnce(error)
+    const fallbackLog = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const onUnhandledRejection = vi.fn()
+    process.on('unhandledRejection', onUnhandledRejection)
+    const connector = new BaileysSocketTransportConnector(store)
+
+    try {
+      await connector.connect({ instanceId: 'instance-creds-fallback' })
+      await socket.emit('creds.update', { me: { id: 'user@s.whatsapp.net' } })
+      await flushAsyncEvents()
+
+      expect(fallbackLog).toHaveBeenCalledWith(
+        '[wa:instance-creds-fallback] unhandled transport error',
+        error,
+      )
+      expect(onUnhandledRejection).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection)
+      fallbackLog.mockRestore()
+    }
+  })
+
   it('does not leak an unhandled rejection when onError rejects', async () => {
     const socket = createFakeBaileysSocket()
     baileysMock.makeWASocket.mockReturnValueOnce(socket)
@@ -248,6 +315,37 @@ describe('BaileysSocketTransportConnector', () => {
       expect(onUnhandledRejection).not.toHaveBeenCalled()
     } finally {
       process.off('unhandledRejection', onUnhandledRejection)
+    }
+  })
+
+  it('does not leak an unhandled rejection when the fallback logger throws', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const callbackError = new Error('QR callback failed')
+    const fallbackError = new Error('fallback logger failed')
+    const fallbackLog = vi.spyOn(console, 'error').mockImplementation(() => {
+      throw fallbackError
+    })
+    const onUnhandledRejection = vi.fn()
+    process.on('unhandledRejection', onUnhandledRejection)
+    const callbacks: WaTransportCallbacks = {
+      onQr: vi.fn().mockRejectedValue(callbackError),
+    }
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    try {
+      await connector.connect({ instanceId: 'instance-fallback-error', callbacks })
+      await socket.emit('connection.update', { qr: 'qr-fixture' })
+      await flushAsyncEvents()
+
+      expect(fallbackLog).toHaveBeenCalledWith(
+        '[wa:instance-fallback-error] unhandled transport error',
+        callbackError,
+      )
+      expect(onUnhandledRejection).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection)
+      fallbackLog.mockRestore()
     }
   })
 
