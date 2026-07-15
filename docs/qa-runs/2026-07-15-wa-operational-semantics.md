@@ -3,7 +3,8 @@
 - Исполнитель: Codex task-agent + три review/implementation-субагента
 - Ветка/коммит: `feat/phase-1-wa-operational-semantics` / `9f02cfbc40499f326a506bd25a93c687440aad89`
 - PR: https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/27
-- CI/CodeRabbit: pending
+- CI: `quality-gate` passed — https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29438989459
+- CodeRabbit: check passed без inline threads, но текстовый review не выполнен из-за внешнего rate-limit; выполнен локальный финальный review.
 
 ## Автотесты
 
@@ -27,7 +28,7 @@
 - `pnpm test:cov` — passed; WA 91.63% statements / 84.04% branches, worker 95.41% / 91.08%, shared 97.6% / 92.64%.
 - `pnpm build` — passed; generated ERD возвращён к canonical formatting.
 - `git diff --check`, anti-weakening и secret/session/forbidden-surface scans — passed.
-- CI и CodeRabbit — pending до открытия PR.
+- CI `quality-gate` — passed; CodeRabbit — check passed, review rate-limited, unresolved review threads: 0.
 
 ## Ручной QA (QA_CHECKPOINTS.md §3.1)
 
