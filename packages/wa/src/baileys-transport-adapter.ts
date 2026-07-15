@@ -24,13 +24,7 @@ export class BaileysTransportAdapter implements WaTransportFactory {
     callbacks?: WaTransportCallbacks,
   ): Promise<WaTransportSession> {
     const normalizedInstanceId = normalizeNonEmptyString(instanceId, 'instanceId')
-    if (!this.connector) {
-      throw new WaTransportUnavailableError(
-        'Baileys transport connector is not configured; skeleton cannot open a real connection',
-      )
-    }
-
-    return this.connector.connect({ instanceId: normalizedInstanceId, callbacks })
+    return this.requireConnector().connect({ instanceId: normalizedInstanceId, callbacks })
   }
 
   async closeTransport(instanceId: string): Promise<WaTransportSession> {

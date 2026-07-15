@@ -7,6 +7,7 @@ export type WaTransportErrorCode =
   | 'already_connected'
   | 'not_connected'
   | 'operation_in_progress'
+  | 'close_timeout'
   | 'connect_failed'
   | 'disconnected'
   | 'logged_out'
@@ -101,5 +102,17 @@ export class WaTransportOperationInProgressError extends Error {
   constructor(readonly instanceId: string) {
     super(`WA transport already has a terminal operation in progress for instance ${instanceId}`)
     this.name = 'WaTransportOperationInProgressError'
+  }
+}
+
+export class WaTransportCloseTimeoutError extends Error {
+  readonly code = 'close_timeout' satisfies WaTransportErrorCode
+
+  constructor(
+    readonly instanceId: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`WA transport did not close within ${timeoutMs}ms for instance ${instanceId}`)
+    this.name = 'WaTransportCloseTimeoutError'
   }
 }

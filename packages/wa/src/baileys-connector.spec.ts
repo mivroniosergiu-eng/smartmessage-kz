@@ -6,6 +6,7 @@ import { BaileysSocketTransportConnector } from './baileys-connector'
 import type { SessionState } from './session'
 import {
   WaTransportAlreadyConnectedError,
+  WaTransportCloseTimeoutError,
   WaTransportNotConnectedError,
   WaTransportOperationInProgressError,
   type WaTransportCallbacks,
@@ -397,6 +398,81 @@ describe('BaileysSocketTransportConnector', () => {
       lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
     })
     await expect(logout).rejects.toBe(logoutError)
+  })
+
+  it('fails runtime close when Baileys never emits the transport close event', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = createFakeBaileysSocket()
+      socket.end.mockResolvedValueOnce(undefined)
+      baileysMock.makeWASocket.mockReturnValueOnce(socket)
+      const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+      const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore(), {
+        transportCloseTimeoutMs: 1_000,
+      })
+
+      await connector.connect({ instanceId: 'instance-close-timeout', callbacks })
+      const close = connector.closeTransport('instance-close-timeout')
+      let closeError: unknown
+      void close.catch((error: unknown) => {
+        closeError = error
+      })
+
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(closeError).toBeInstanceOf(WaTransportCloseTimeoutError)
+      expect(callbacks.onError).toHaveBeenCalledWith({
+        instanceId: 'instance-close-timeout',
+        error: closeError,
+      })
+      await expect(connector.connect({ instanceId: 'instance-close-timeout' })).rejects.toBeInstanceOf(
+        WaTransportAlreadyConnectedError,
+      )
+      expect(vi.getTimerCount()).toBe(0)
+
+      await socket.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+      })
+      await expect(connector.closeTransport('instance-close-timeout')).resolves.toMatchObject({
+        status: 'disconnected',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('fails logout when Baileys never confirms the transport close event', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = createFakeBaileysSocket()
+      socket.logout.mockResolvedValueOnce(undefined)
+      baileysMock.makeWASocket.mockReturnValueOnce(socket)
+      const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+      const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore(), {
+        transportCloseTimeoutMs: 1_000,
+      })
+
+      await connector.connect({ instanceId: 'instance-logout-timeout', callbacks })
+      const logout = connector.logout('instance-logout-timeout')
+      let logoutError: unknown
+      void logout.catch((error: unknown) => {
+        logoutError = error
+      })
+
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(logoutError).toBeInstanceOf(WaTransportCloseTimeoutError)
+      expect(callbacks.onError).toHaveBeenCalledWith({
+        instanceId: 'instance-logout-timeout',
+        error: logoutError,
+      })
+      await expect(
+        connector.connect({ instanceId: 'instance-logout-timeout' }),
+      ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('emits QR events with instance id, QR payload, and deterministic expiry', async () => {

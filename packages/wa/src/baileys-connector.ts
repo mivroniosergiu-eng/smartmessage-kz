@@ -18,6 +18,7 @@ import type { BaileysTransportConnectInput, BaileysTransportConnector } from './
 import type { SessionState, WaDisconnectReason } from './session'
 import {
   WaTransportAlreadyConnectedError,
+  WaTransportCloseTimeoutError,
   WaTransportNotConnectedError,
   WaTransportOperationInProgressError,
   type WaTransportCallbacks,
@@ -25,11 +26,13 @@ import {
 } from './transport'
 
 const DEFAULT_QR_TTL_MS = 60_000
+const DEFAULT_TRANSPORT_CLOSE_TIMEOUT_MS = 10_000
 const BINARY_JSON_MARKER = '__smartmessageWaBinary'
 
 export interface BaileysSocketTransportConnectorOptions {
   now?: () => Date
   qrTtlMs?: number
+  transportCloseTimeoutMs?: number
   socketConfig?: Omit<Partial<UserFacingSocketConfig>, 'auth' | 'printQRInTerminal'>
 }
 
@@ -56,6 +59,7 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
   private readonly pendingAuthClears = new Set<string>()
   private readonly now: () => Date
   private readonly qrTtlMs: number
+  private readonly transportCloseTimeoutMs: number
   private readonly socketConfig: Omit<Partial<UserFacingSocketConfig>, 'auth' | 'printQRInTerminal'>
 
   constructor(
@@ -64,6 +68,9 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
   ) {
     this.now = options.now ?? (() => new Date())
     this.qrTtlMs = normalizeQrTtlMs(options.qrTtlMs ?? DEFAULT_QR_TTL_MS)
+    this.transportCloseTimeoutMs = normalizeTransportCloseTimeoutMs(
+      options.transportCloseTimeoutMs ?? DEFAULT_TRANSPORT_CLOSE_TIMEOUT_MS,
+    )
     this.socketConfig = options.socketConfig ?? {}
   }
 
@@ -142,8 +149,9 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     let closeError: unknown
     let hasCloseError = false
     try {
-      await active.socket.end(undefined)
-      await active.transportClosed
+      await this.waitForTransportClose(normalizedInstanceId, active, () =>
+        active.socket.end(undefined),
+      )
     } catch (error: unknown) {
       closeError = error
       hasCloseError = true
@@ -201,10 +209,13 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     let closeError: unknown
     let hasCloseError = false
     try {
-      if (hasLogoutError) {
-        await active.socket.end(logoutError instanceof Error ? logoutError : undefined)
-      }
-      await active.transportClosed
+      await this.waitForTransportClose(
+        normalizedInstanceId,
+        active,
+        hasLogoutError
+          ? () => active.socket.end(logoutError instanceof Error ? logoutError : undefined)
+          : undefined,
+      )
     } catch (error: unknown) {
       closeError = error
       hasCloseError = true
@@ -309,6 +320,29 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       console.error(`[wa:${instanceId}] unhandled transport error`, error)
     } catch {
       // Error reporting must not create an unhandled rejection.
+    }
+  }
+
+  private async waitForTransportClose(
+    instanceId: string,
+    active: ActiveBaileysTransport,
+    close?: () => Promise<void>,
+  ): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const closeOperation = (async () => {
+      await close?.()
+      await active.transportClosed
+    })()
+    const timeoutOperation = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(new WaTransportCloseTimeoutError(instanceId, this.transportCloseTimeoutMs))
+      }, this.transportCloseTimeoutMs)
+    })
+
+    try {
+      await Promise.race([closeOperation, timeoutOperation])
+    } finally {
+      if (timeout) clearTimeout(timeout)
     }
   }
 
@@ -528,6 +562,14 @@ function normalizeQrTtlMs(qrTtlMs: number): number {
   }
 
   return qrTtlMs
+}
+
+function normalizeTransportCloseTimeoutMs(timeoutMs: number): number {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError('transportCloseTimeoutMs must be a positive safe integer')
+  }
+
+  return timeoutMs
 }
 
 function disconnectReasonFromStatusCode(statusCode: number | undefined): WaDisconnectReason {

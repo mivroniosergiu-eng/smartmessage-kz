@@ -10,20 +10,21 @@
 - TDD green: та же команда — passed, 23/23.
 - Ownership-race TDD red: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — expected failure подтвердил, что два конкурентных `connect()` проходили active-registry check до async auth-state read.
 - Review-fix TDD red: последовательные целевые прогоны подтвердили дефекты в `logged_out` cleanup, concurrent close/logout, stale-socket identity, queued/in-flight auth writes, persistence-error visibility, fallback close и фактическом transport-close barrier.
-- Review-fix TDD green: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — passed, 41/41.
-- `pnpm --filter @smartmessage/wa test` — passed, 110/110.
+- CodeRabbit-fix TDD red: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — expected failure, 2/43: close/logout могли ждать бесконечно, если Baileys не публиковал фактический close-event.
+- Review-fix TDD green: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — passed, 43/43.
+- `pnpm --filter @smartmessage/wa test` — passed, 112/112.
 - `pnpm --filter @smartmessage/wa lint` — passed.
 - `pnpm --filter @smartmessage/worker test` — passed, 86/86.
 - `pnpm --filter @smartmessage/worker lint` — passed.
 - `pnpm typecheck` — passed для всех workspace-пакетов.
-- `pnpm test` — passed, 262/262 workspace tests.
+- `pnpm test` — passed, 264/264 workspace tests.
 - `pnpm build` — passed.
 - `git diff --check` — passed после удаления generated-only whitespace churn из `packages/db/ERD.md`.
 - Anti-weakening scan — passed: в изменённой тестовой поверхности нет `.skip`, `.only`, `xit`, `xdescribe` или `xtest`.
 - Session-file safety scan — passed: нет `useMultiFileAuthState`, `auth_info*`, `wa-sessions`, `*.session` и session-артефактов.
 - Baileys/socket safety scan — passed: production `makeWASocket` изолирован в connector, `sendMessage()` не добавлен.
 - Worker/web surface scan — passed: diff не затрагивает `apps/worker` и `apps/web`; worker default остаётся `MockSessionManager`.
-- CI для локального незакоммиченного review-fix не запускался. Удалённый head PR до этих исправлений: `e3b253788e4a3c11eee039d2cdfb0b49ad641344`, старый `quality-gate` был green.
+- Head `8cfa11a6b234650436b8775fa56a134f90867221`: [quality-gate passed](https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29389356638/job/87269146046); CodeRabbit completed с одним major timeout finding и одним trivial adapter finding, исправленными следующим review-fix commit.
 
 ## Покрытие критических контрактов
 
@@ -34,6 +35,7 @@
 - Active/opening registries блокируют последовательное и конкурентное двойное владение нормализованным `instanceId`.
 - Close/logout используют first-wins terminal reservation; конкурирующие terminal operations завершаются детерминированной ошибкой.
 - Ownership сохраняется до фактического `connection.update: close`, даже если `logout()` или `end()` вернули Promise раньше завершения transport cleanup.
+- Если Baileys нарушает close-event contract, configurable 10-second barrier завершается типизированной `WaTransportCloseTimeoutError`, оставляет ownership fail-closed и допускает последующий terminal retry.
 - Ошибка logout запускает fallback `end(error)`; ошибка фактического close сохраняет socket в retryable `terminal_failed` и блокирует новый connect.
 - Identity gate полностью игнорирует delayed events заменённого socket, включая stale `logged_out`.
 - Remote close блокирует reconnect до drain/cleanup; lifecycle callback может безопасно инициировать новый connect после освобождения registry.
@@ -59,4 +61,5 @@
 - Serialized event/auth persistence barrier закрыла потерю queued update и credential resurrection после clear.
 - Persistence и auth-clear failures стали наблюдаемыми и получили fail-closed recovery/retry paths.
 - Actual-close barrier закрыла раннее освобождение ownership из-за асинхронного контракта Baileys `logout()`/`end()`.
+- CodeRabbit review выявил бесконечное ожидание отсутствующего close-event; finite timeout закрывает zombie terminal operation без раннего reconnect.
 - `pnpm build` перегенерировал только whitespace в `packages/db/ERD.md`; файл отформатирован обратно, Prisma schema не менялась.
