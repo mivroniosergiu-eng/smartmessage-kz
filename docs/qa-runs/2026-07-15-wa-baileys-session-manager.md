@@ -25,7 +25,8 @@
 - Anti-weakening scan — passed: в новом тесте нет `.skip`, `.only`, `xit`, `xdescribe` или `xtest`.
 - Secret/session-file scan — passed: реальные ключи/URL, `auth_info*`, `wa-sessions` и `*.session` не добавлены.
 - Forbidden-surface scan — passed: нет `sendMessage`, `useMultiFileAuthState`, прямого `makeWASocket`/Baileys/Prisma import, HTTP/UI/QR endpoint или socket autostart.
-- CI и CodeRabbit — ожидают публикации PR.
+- GitHub Actions `quality-gate` — passed для head `95f228a` ([run](https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29400043817/job/87302265500)).
+- CodeRabbit status context завершился, но содержательный review не был выдан: первый run завершился внутренней ошибкой, повторный run отклонён внешним review rate-limit (next review через 52 минуты). Thread-aware GraphQL audit: unresolved review threads `0`. Это не выдано за успешный CodeRabbit review; компенсирующий независимый review двух субагентов и его TDD-fixes зафиксированы ниже.
 
 ## Покрытие критических контрактов
 
