@@ -34,6 +34,7 @@ import { PrismaWaQrBootstrapRepository } from './prisma-wa-qr-bootstrap.reposito
 import { PrismaWaAuthStateRepository } from './prisma-wa-auth-state.repository'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
+import { PrismaWaRestrictedRecoveryService } from './prisma-wa-restricted-recovery.service'
 import { WaAccountController } from './wa-account.controller'
 import {
   WA_OWNER_REGISTRY,
@@ -56,6 +57,7 @@ import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { WaLifecycleJobProcessor, type WaLifecycleJobResult } from './wa-lifecycle-job.processor'
 import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
+import { WaRestrictedRecoveryReconciler } from './wa-restricted-recovery-reconciler'
 import type {
   WaLifecycleQueueEventsFactory,
   WaLifecycleQueueFactory,
@@ -227,6 +229,7 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
         ttlMs: number,
         statusRepository: WaAccountStatusRepository,
         qrBootstrapRepository: WaQrBootstrapRepository,
+        lifecycleQueue: WaLifecycleQueueService,
         _identityLease: WaWorkerIdentityLease,
         identityGate: WaWorkerIdentityLossGate,
       ): BaileysSessionRuntime =>
@@ -237,6 +240,11 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
           ttlMs,
           statusRepository,
           qrBootstrapRepository,
+          restrictionRecoveryScheduler: {
+            scheduleRestrictedRecovery: async (instanceId, restrictedUntil): Promise<void> => {
+              await lifecycleQueue.enqueueRestrictedRecovery(instanceId, restrictedUntil)
+            },
+          },
         }),
       inject: [
         WA_WORKER_ID,
@@ -245,6 +253,7 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
         WA_OWNER_TTL_MS,
         WA_STATUS_REPOSITORY,
         WA_QR_BOOTSTRAP_REPOSITORY,
+        WaLifecycleQueueService,
         WA_WORKER_IDENTITY_LEASE,
         WaWorkerIdentityLossGate,
       ],
@@ -265,6 +274,10 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
     {
       provide: PrismaWaAccountCommandGuard,
       useFactory: (): PrismaWaAccountCommandGuard => new PrismaWaAccountCommandGuard(),
+    },
+    {
+      provide: PrismaWaRestrictedRecoveryService,
+      useFactory: (): PrismaWaRestrictedRecoveryService => new PrismaWaRestrictedRecoveryService(),
     },
     {
       provide: PrismaWaAccountAdminService,
@@ -293,6 +306,12 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
       inject: [WA_REDIS_CONNECTION],
     },
     WaLifecycleQueueService,
+    {
+      provide: WaRestrictedRecoveryReconciler,
+      useFactory: (queueService: WaLifecycleQueueService): WaRestrictedRecoveryReconciler =>
+        new WaRestrictedRecoveryReconciler(queueService),
+      inject: [WaLifecycleQueueService],
+    },
     WaLifecycleCommandQueueService,
     {
       provide: WA_LIFECYCLE_WORKER,
@@ -356,7 +375,11 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
         lifecycle: WaSessionLifecycleService,
         lossGate: WaWorkerIdentityLossGate,
         terminate: WaWorkerIdentityFatalHandler,
+        restrictedRecoveryReconciler: WaRestrictedRecoveryReconciler,
       ): Promise<WaWorkerIdentityLossSupervisor> => {
+        if (process.env.NODE_ENV !== 'test') {
+          await restrictedRecoveryReconciler.reconcile()
+        }
         const supervisor = new WaWorkerIdentityLossSupervisor(
           lifecycleWorker,
           ownerLifecycleWorker,
@@ -375,6 +398,7 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
         WA_SESSION_LIFECYCLE,
         WaWorkerIdentityLossGate,
         WA_WORKER_IDENTITY_FATAL_HANDLER,
+        WaRestrictedRecoveryReconciler,
       ],
     },
     WaShutdownCoordinator,
@@ -395,11 +419,13 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
     WaLifecycleJobProcessor,
     InternalWorkerApiGuard,
     PrismaWaAccountCommandGuard,
+    PrismaWaRestrictedRecoveryService,
     PrismaWaAccountAdminService,
     WA_LIFECYCLE_QUEUE,
     WA_LIFECYCLE_QUEUE_EVENTS_FACTORY,
     WA_LIFECYCLE_QUEUE_FACTORY,
     WaLifecycleQueueService,
+    WaRestrictedRecoveryReconciler,
     WaLifecycleCommandQueueService,
     WA_LIFECYCLE_WORKER,
     WA_OWNER_LIFECYCLE_WORKER,

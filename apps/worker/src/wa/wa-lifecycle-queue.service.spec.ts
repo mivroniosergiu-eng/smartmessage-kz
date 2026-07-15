@@ -1,6 +1,8 @@
 import 'reflect-metadata'
 
 import {
+  LOGOUT_WA_INSTANCE_JOB_NAME,
+  RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
   RENEW_WA_INSTANCE_JOB_NAME,
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
@@ -41,6 +43,22 @@ describe('WaLifecycleQueueService', () => {
     )
   })
 
+  it('enqueueLogout adds a durable normalized logout job', async () => {
+    const { queue, service } = createService()
+
+    await service.enqueueLogout(' instance-logout ')
+
+    expect(queue.add).toHaveBeenCalledWith(
+      LOGOUT_WA_INSTANCE_JOB_NAME,
+      { instanceId: 'instance-logout' },
+      expect.objectContaining({
+        attempts: 8,
+        backoff: { type: 'fixed', delay: 5_000 },
+        jobId: 'wa-lifecycle.logout-wa-instance.instance-logout',
+      }),
+    )
+  })
+
   it('enqueueRenew adds a normalized renew job with deterministic job id', async () => {
     const { queue, service } = createService()
 
@@ -57,6 +75,70 @@ describe('WaLifecycleQueueService', () => {
         removeOnFail: 100,
       }),
     )
+  })
+
+  it('enqueues restricted recovery durably at the exact future timestamp', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-15T12:00:00.000Z'))
+    try {
+      const { queue, service } = createService()
+
+      await service.enqueueRestrictedRecovery(
+        ' instance.restricted/primary ',
+        new Date('2026-07-15T13:00:00.000Z'),
+      )
+
+      expect(queue.add).toHaveBeenCalledWith(
+        RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
+        {
+          instanceId: 'instance.restricted/primary',
+          restrictedUntil: '2026-07-15T13:00:00.000Z',
+        },
+        {
+          attempts: 8,
+          backoff: { type: 'fixed', delay: 5_000 },
+          delay: 3_600_000,
+          jobId:
+            'wa-lifecycle.recover-restricted-wa-instance.instance%2Erestricted%2Fprimary.1784120400000',
+          removeOnComplete: true,
+          removeOnFail: 100,
+        },
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('enqueues an overdue restricted recovery immediately without a negative delay', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-15T14:00:00.000Z'))
+    try {
+      const { queue, service } = createService()
+
+      await service.enqueueRestrictedRecovery(
+        'instance-overdue',
+        new Date('2026-07-15T13:00:00.000Z'),
+      )
+
+      expect(queue.add).toHaveBeenCalledWith(
+        RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
+        expect.objectContaining({ restrictedUntil: '2026-07-15T13:00:00.000Z' }),
+        expect.objectContaining({ delay: 0 }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects an invalid restricted recovery date before Queue.add', async () => {
+    const { queue, service } = createService()
+
+    await expect(
+      service.enqueueRestrictedRecovery('instance-invalid-date', new Date(Number.NaN)),
+    ).rejects.toThrow(
+      'recover-restricted-wa-instance payload.restrictedUntil must be a canonical ISO timestamp',
+    )
+    expect(queue.add).not.toHaveBeenCalled()
   })
 
   it('invalid instanceId rejects before Queue.add', async () => {
@@ -104,6 +186,33 @@ describe('WaLifecycleQueueService', () => {
     expect(ackTimeoutMs).toBeLessThanOrEqual(15_000)
     expect(queueEvents.close).toHaveBeenCalledOnce()
     expect(directedQueue.close).toHaveBeenCalledOnce()
+  })
+
+  it('routes logout to a one-attempt exact owner job with retained acknowledgement', async () => {
+    const { directedJob, directedQueue, service } = createService()
+    directedJob.waitUntilFinished.mockResolvedValueOnce({
+      instanceId: 'instance-owned-logout',
+      loggedOut: true,
+    })
+
+    await expect(
+      service.enqueueLogout('instance-owned-logout', { owner: 'worker/a', epoch: 12n }),
+    ).resolves.toEqual({ instanceId: 'instance-owned-logout', loggedOut: true })
+
+    expect(directedQueue.add).toHaveBeenCalledWith(
+      LOGOUT_WA_INSTANCE_JOB_NAME,
+      {
+        instanceId: 'instance-owned-logout',
+        expectedOwnerWorkerId: 'worker/a',
+        expectedOwnerEpoch: '12',
+      },
+      expect.objectContaining({
+        attempts: 1,
+        jobId: 'wa-lifecycle-owner.logout-wa-instance.instance-owned-logout.worker%2Fa.12',
+        removeOnComplete: { age: 300, count: 1_000 },
+        removeOnFail: true,
+      }),
+    )
   })
 
   it('does not lose an owner result produced after a ten-second physical close', async () => {

@@ -16,7 +16,10 @@ import {
   WaAccountAdminInvalidInputError,
   WaAccountAdminTeamNotFoundError,
 } from './prisma-wa-account-admin.service'
-import { WaAccountCommandTargetNotFoundError } from './prisma-wa-account-command.guard'
+import {
+  WaAccountCommandBlockedError,
+  WaAccountCommandTargetNotFoundError,
+} from './prisma-wa-account-command.guard'
 import { WaAccountController } from './wa-account.controller'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
@@ -145,10 +148,22 @@ describe('WaAccountController', () => {
   it.each([
     ['start', () => controller.startAccount(' instance-1 '), 'enqueueStart'],
     ['stop', () => controller.stopAccount(' instance-1 '), 'enqueueStop'],
+    ['logout', () => controller.logoutAccount(' instance-1 '), 'enqueueLogout'],
     ['renew', () => controller.renewAccount(' instance-1 '), 'enqueueRenew'],
   ] as const)('queues %s lifecycle command', async (command, call, methodName) => {
     await expect(call()).resolves.toEqual({ instanceId: 'instance-1', command, queued: true })
     expect(commandQueue[methodName]).toHaveBeenCalledWith('instance-1')
+  })
+
+  it('maps an operationally blocked start to conflict without exposing internals', async () => {
+    commandQueue.enqueueStart.mockRejectedValueOnce(
+      new WaAccountCommandBlockedError('instance-banned', WaAccountStatus.BANNED, null),
+    )
+
+    await expect(controller.startAccount('instance-banned')).rejects.toMatchObject({
+      status: 409,
+      message: 'WA account start is blocked by operational status BANNED: instance-banned',
+    })
   })
 
   it('rejects invalid instanceId before calling command queue service', async () => {
@@ -310,6 +325,7 @@ function createCommandQueueMock(): CommandQueueMock {
   return {
     enqueueStart: vi.fn(async () => ({ id: 'start-job' })),
     enqueueStop: vi.fn(async () => ({ id: 'stop-job' })),
+    enqueueLogout: vi.fn(async () => ({ id: 'logout-job' })),
     enqueueRenew: vi.fn(async () => ({ id: 'renew-job' })),
   }
 }
@@ -365,5 +381,6 @@ interface AdminServiceMock {
 interface CommandQueueMock {
   enqueueStart: ReturnType<typeof vi.fn<(instanceId: string) => Promise<unknown>>>
   enqueueStop: ReturnType<typeof vi.fn<(instanceId: string) => Promise<unknown>>>
+  enqueueLogout: ReturnType<typeof vi.fn<(instanceId: string) => Promise<unknown>>>
   enqueueRenew: ReturnType<typeof vi.fn<(instanceId: string) => Promise<unknown>>>
 }

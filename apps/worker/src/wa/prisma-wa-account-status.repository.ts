@@ -35,7 +35,27 @@ export class PrismaWaAccountStatusRepository implements WaAccountStatusRepositor
     const result = await this.db.waAccount.updateMany({
       where: {
         instanceId,
-        OR: [{ ownershipEpoch: { lt: epoch } }, { ownershipEpoch: epoch, ownerWorkerId: workerId }],
+        AND: [
+          {
+            OR: [
+              { ownershipEpoch: { lt: epoch } },
+              { ownershipEpoch: epoch, ownerWorkerId: workerId },
+            ],
+          },
+          {
+            OR: [
+              {
+                status: {
+                  notIn: [WaAccountStatus.BANNED, WaAccountStatus.RESTRICTED],
+                },
+              },
+              {
+                status: WaAccountStatus.RESTRICTED,
+                restrictedUntil: { lte: new Date() },
+              },
+            ],
+          },
+        ],
       },
       data: { ownershipEpoch: epoch, ownerWorkerId: workerId },
     })
@@ -80,30 +100,93 @@ export class PrismaWaAccountStatusRepository implements WaAccountStatusRepositor
     })
   }
 
-  markRestricted(
+  async markRestricted(
     instanceId: string,
     workerId: string,
     restrictedUntil: Date,
     epoch: bigint,
   ): Promise<boolean> {
-    return this.updateStatus(instanceId, workerId, epoch, {
-      status: WaAccountStatus.RESTRICTED,
-      pid: null,
-      restrictedUntil,
+    const result = await this.db.waAccount.updateMany({
+      where: {
+        instanceId,
+        ownerWorkerId: workerId,
+        ownershipEpoch: epoch,
+        status: { not: WaAccountStatus.BANNED },
+        OR: [
+          { status: { not: WaAccountStatus.RESTRICTED } },
+          { restrictedUntil: null },
+          { restrictedUntil: { lt: restrictedUntil } },
+        ],
+      },
+      data: {
+        status: WaAccountStatus.RESTRICTED,
+        pid: null,
+        restrictedUntil,
+      },
     })
+    if (result.count > 0) return true
+
+    const account = await this.db.waAccount.findUnique({
+      where: { instanceId },
+      select: {
+        ownerWorkerId: true,
+        ownershipEpoch: true,
+        status: true,
+        restrictedUntil: true,
+      },
+    })
+    if (!account) throw new WaAccountStatusNotFoundError(instanceId)
+    return (
+      account.ownerWorkerId === workerId &&
+      account.ownershipEpoch === epoch &&
+      account.status === WaAccountStatus.RESTRICTED &&
+      account.restrictedUntil !== null &&
+      account.restrictedUntil >= restrictedUntil
+    )
   }
 
-  markBanned(
+  async markBanned(
     instanceId: string,
     workerId: string,
     _reason: string | undefined,
     epoch: bigint,
   ): Promise<boolean> {
-    return this.updateStatus(instanceId, workerId, epoch, {
-      status: WaAccountStatus.BANNED,
-      pid: null,
-      restrictedUntil: null,
+    const updated = await this.db.$transaction(async (tx) => {
+      const result = await tx.waAccount.updateMany({
+        where: { instanceId, ownerWorkerId: workerId, ownershipEpoch: epoch },
+        data: {
+          status: WaAccountStatus.BANNED,
+          pid: null,
+          restrictedUntil: null,
+        },
+      })
+      if (result.count === 0) return false
+
+      const account = await tx.waAccount.findUniqueOrThrow({
+        where: { instanceId },
+        select: { id: true, instanceId: true, teamId: true },
+      })
+      await tx.auditLog.createMany({
+        data: [
+          {
+            id: createBanAuditId(account.id),
+            teamId: account.teamId,
+            action: 'WA_ACCOUNT_BANNED',
+            details: JSON.stringify({
+              waAccountId: account.id,
+              instanceId: account.instanceId,
+              classification: 'banned',
+            }),
+          },
+        ],
+        skipDuplicates: true,
+      })
+
+      return true
     })
+
+    if (updated) return true
+    return this.resolveRejectedFence(instanceId)
   }
 
   private async updateStatus(
@@ -117,7 +200,12 @@ export class PrismaWaAccountStatusRepository implements WaAccountStatusRepositor
     },
   ): Promise<boolean> {
     const result = await this.db.waAccount.updateMany({
-      where: { instanceId, ownerWorkerId: workerId, ownershipEpoch: epoch },
+      where: {
+        instanceId,
+        ownerWorkerId: workerId,
+        ownershipEpoch: epoch,
+        status: { not: WaAccountStatus.BANNED },
+      },
       data,
     })
 
@@ -133,4 +221,8 @@ export class PrismaWaAccountStatusRepository implements WaAccountStatusRepositor
     if (!account) throw new WaAccountStatusNotFoundError(instanceId)
     return false
   }
+}
+
+function createBanAuditId(waAccountId: string): string {
+  return `wa-account-banned:${waAccountId}`
 }

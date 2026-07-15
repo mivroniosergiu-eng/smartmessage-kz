@@ -4,7 +4,7 @@ import { BaileysSessionManager } from './baileys-session-manager'
 import { BaileysTransportAdapter } from './baileys-transport-adapter'
 import type { OwnerRegistry } from './owner-registry'
 import type { WaQrBootstrapRepository } from './qr-bootstrap'
-import { WaSessionLifecycleService } from './session-lifecycle'
+import { WaSessionLifecycleService, type WaRestrictionRecoveryScheduler } from './session-lifecycle'
 import type { WaAccountStatusRepository } from './status-repository'
 import type { WaTransportFactory } from './transport'
 
@@ -15,6 +15,7 @@ export interface BaileysSessionRuntimeInput {
   ttlMs: number
   statusRepository?: WaAccountStatusRepository
   qrBootstrapRepository?: WaQrBootstrapRepository
+  restrictionRecoveryScheduler?: WaRestrictionRecoveryScheduler
   transport?: WaTransportFactory
 }
 
@@ -48,6 +49,7 @@ export function createBaileysSessionRuntime(
     input.ttlMs,
     input.statusRepository,
     input.qrBootstrapRepository,
+    input.restrictionRecoveryScheduler,
   )
 
   return { sessionManager, lifecycle }

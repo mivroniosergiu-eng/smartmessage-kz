@@ -38,6 +38,10 @@ interface ActiveSupervision {
   lastStatusKey?: string
 }
 
+export interface WaRestrictionRecoveryScheduler {
+  scheduleRestrictedRecovery(instanceId: string, restrictedUntil: Date): Promise<void>
+}
+
 export class WaSessionLifecycleShuttingDownError extends Error {
   constructor() {
     super('WA session lifecycle is shutting down')
@@ -59,6 +63,7 @@ export class WaSessionLifecycleService {
   private readonly active = new Map<string, ActiveSupervision>()
   private readonly starts = new Map<string, Promise<SessionState>>()
   private readonly stops = new Map<string, Promise<boolean>>()
+  private readonly logouts = new Map<string, Promise<boolean>>()
   private readonly transportShutdowns = new Set<Promise<void>>()
   private readonly transportShutdownsByInstance = new Map<string, Promise<void>>()
   private readonly shutdownController = new AbortController()
@@ -72,6 +77,7 @@ export class WaSessionLifecycleService {
     ttlMs: number,
     private readonly statusRepository?: WaAccountStatusRepository,
     private readonly qrBootstrapRepository?: WaQrBootstrapRepository,
+    private readonly restrictionRecoveryScheduler?: WaRestrictionRecoveryScheduler,
   ) {
     this.workerId = normalizeWorkerId(workerId)
     this.ttlMs = normalizeTtl(ttlMs)
@@ -84,10 +90,14 @@ export class WaSessionLifecycleService {
     const pending = this.starts.get(normalizedInstanceId)
     if (pending) return pending
 
-    const stopping = this.stops.get(normalizedInstanceId)
-    const start = stopping
-      ? stopping.then(() => this.startOnce(normalizedInstanceId))
-      : this.startOnce(normalizedInstanceId)
+    const terminalCommands = [
+      this.stops.get(normalizedInstanceId),
+      this.logouts.get(normalizedInstanceId),
+    ].filter((command): command is Promise<boolean> => command !== undefined)
+    const start =
+      terminalCommands.length > 0
+        ? Promise.all(terminalCommands).then(() => this.startOnce(normalizedInstanceId))
+        : this.startOnce(normalizedInstanceId)
     return this.trackStart(normalizedInstanceId, start)
   }
 
@@ -212,7 +222,11 @@ export class WaSessionLifecycleService {
   }
 
   private async finishShutdown(): Promise<void> {
-    const pendingCommands = [...this.starts.values(), ...this.stops.values()]
+    const pendingCommands = [
+      ...this.starts.values(),
+      ...this.stops.values(),
+      ...this.logouts.values(),
+    ]
     if (pendingCommands.length > 0) {
       await Promise.race([
         Promise.allSettled(pendingCommands).then(() => undefined),
@@ -237,6 +251,7 @@ export class WaSessionLifecycleService {
     }
     this.starts.clear()
     this.stops.clear()
+    this.logouts.clear()
 
     if (firstError !== undefined) throw firstError
   }
@@ -309,6 +324,167 @@ export class WaSessionLifecycleService {
     return tracked
   }
 
+  logout(instanceId: string, expectedEpoch?: bigint): Promise<boolean> {
+    const normalizedInstanceId = normalizeInstanceId(instanceId)
+    if (expectedEpoch !== undefined && expectedEpoch <= 0n) {
+      return Promise.reject(new RangeError('expectedEpoch must be positive'))
+    }
+    const pending = this.logouts.get(normalizedInstanceId)
+    if (pending) return pending
+
+    const pendingStart = this.starts.get(normalizedInstanceId)
+    if (pendingStart && this.starts.get(normalizedInstanceId) === pendingStart) {
+      this.starts.delete(normalizedInstanceId)
+    }
+    const pendingStop = this.stops.get(normalizedInstanceId)
+    const logout = this.logoutAfterCommands(
+      normalizedInstanceId,
+      pendingStart,
+      pendingStop,
+      expectedEpoch,
+    )
+    const tracked = logout.then(
+      (loggedOut) => {
+        if (this.logouts.get(normalizedInstanceId) === tracked) {
+          this.logouts.delete(normalizedInstanceId)
+        }
+        return loggedOut
+      },
+      (error: unknown) => {
+        if (this.logouts.get(normalizedInstanceId) === tracked) {
+          this.logouts.delete(normalizedInstanceId)
+        }
+        throw error
+      },
+    )
+    this.logouts.set(normalizedInstanceId, tracked)
+    return tracked
+  }
+
+  private async logoutAfterCommands(
+    instanceId: string,
+    pendingStart: Promise<SessionState> | undefined,
+    pendingStop: Promise<boolean> | undefined,
+    expectedEpoch: bigint | undefined,
+  ): Promise<boolean> {
+    if (pendingStart) {
+      try {
+        await pendingStart
+      } catch {
+        // Failed start already performed fail-closed cleanup; logout claims a fresh fence below.
+      }
+    }
+    if (pendingStop) {
+      try {
+        await pendingStop
+      } catch {
+        // Logout is the stronger terminal command and may recover after a failed transport close.
+      }
+    }
+
+    return this.logoutOnce(instanceId, expectedEpoch)
+  }
+
+  private async logoutOnce(
+    instanceId: string,
+    expectedEpoch: bigint | undefined,
+  ): Promise<boolean> {
+    let supervision = this.active.get(instanceId)
+    const ownership = await this.ownerRegistry.getOwnership(instanceId)
+    if (
+      ownership &&
+      (ownership.owner !== this.workerId ||
+        (expectedEpoch !== undefined && ownership.epoch !== expectedEpoch))
+    ) {
+      if (supervision) await this.handleOwnershipLoss(supervision)
+      return false
+    }
+    if (!ownership && expectedEpoch !== undefined) {
+      if (supervision) await this.handleOwnershipLoss(supervision)
+      return false
+    }
+    if (
+      supervision &&
+      (!ownership ||
+        ownership.epoch !== supervision.epoch ||
+        ownership.owner !== this.workerId ||
+        (expectedEpoch !== undefined && supervision.epoch !== expectedEpoch))
+    ) {
+      await this.handleOwnershipLoss(supervision)
+      return false
+    }
+
+    if (!supervision) {
+      const claim = ownership ?? (await this.claimAndActivateFence(instanceId))
+      if (ownership && !(await this.activateExistingFence(instanceId, ownership.epoch))) {
+        await this.bestEffortRelease(instanceId, ownership.epoch)
+        return false
+      }
+      supervision = {
+        instanceId,
+        epoch: claim.epoch,
+        starting: false,
+        stopping: false,
+        stopped: false,
+        reconciliationRequested: false,
+      }
+      this.active.set(instanceId, supervision)
+      this.armSupervision(supervision)
+    }
+
+    supervision.stopping = true
+    await supervision.reconciliationInFlight
+    if (!(await this.leaseIsStillOwned(instanceId, supervision.epoch))) {
+      await this.handleOwnershipLoss(supervision)
+      return false
+    }
+
+    try {
+      await this.assertLeaseStillOwned(instanceId, supervision.epoch)
+      const state = await this.ownedSessions.logout(instanceId)
+      await this.assertLeaseStillOwned(instanceId, supervision.epoch)
+      if ((state.status !== 'logged_out' && state.status !== 'banned') || state.hasAuthState) {
+        throw new TypeError(`WA explicit logout returned an invalid terminal state: ${instanceId}`)
+      }
+      if (!(await this.persistOwnedState(supervision, state))) {
+        await this.handleOwnershipLoss(supervision)
+        return false
+      }
+      if (
+        (await this.qrBootstrapRepository?.clear(instanceId, this.workerId, supervision.epoch)) ===
+        false
+      ) {
+        await this.handleOwnershipLoss(supervision)
+        return false
+      }
+
+      const released = await this.ownerRegistry.release(
+        instanceId,
+        this.workerId,
+        supervision.epoch,
+      )
+      this.stopSupervision(supervision)
+      await supervision.heartbeatInFlight
+      return released
+    } catch (error: unknown) {
+      if (this.isTracked(supervision)) {
+        supervision.stopping = false
+        this.armSupervision(supervision)
+      }
+      throw error
+    }
+  }
+
+  private async activateExistingFence(instanceId: string, epoch: bigint): Promise<boolean> {
+    const statusFenceActive =
+      (await this.statusRepository?.activateOwnership(instanceId, this.workerId, epoch)) ?? true
+    if (!statusFenceActive) return false
+    return (
+      (await this.qrBootstrapRepository?.activateOwnership(instanceId, this.workerId, epoch)) ??
+      true
+    )
+  }
+
   private async stopAfterStart(
     instanceId: string,
     pendingStart: Promise<SessionState> | undefined,
@@ -366,17 +542,11 @@ export class WaSessionLifecycleService {
     }
 
     try {
-      if (
-        (await this.statusRepository?.markDisconnected(
-          normalizedInstanceId,
-          this.workerId,
-          state.lastDisconnectReason,
-          supervision.epoch,
-        )) === false
-      ) {
+      if (!(await this.persistOwnedState(supervision, state))) {
         await this.handleOwnershipLoss(supervision)
         return false
       }
+      await this.scheduleRestrictedRecovery(state)
       if (
         (await this.qrBootstrapRepository?.clear(
           normalizedInstanceId,
@@ -629,6 +799,22 @@ export class WaSessionLifecycleService {
       await this.finishTerminal(supervision)
       return
     }
+    if (state.status === 'restricted') {
+      await this.sessionManager.closeTransport(supervision.instanceId)
+      if (!this.isActive(supervision)) return
+      if (!state.restrictedUntil) {
+        throw new TypeError('restricted session state requires restrictedUntil')
+      }
+      if (!this.restrictionRecoveryScheduler) {
+        throw new Error('WA restriction recovery scheduler is not configured')
+      }
+      await this.restrictionRecoveryScheduler.scheduleRestrictedRecovery(
+        supervision.instanceId,
+        state.restrictedUntil,
+      )
+      await this.finishTerminal(supervision)
+      return
+    }
     if (!shouldReconnect(state)) return
 
     try {
@@ -720,15 +906,13 @@ export class WaSessionLifecycleService {
 
         if (ownsExactEpoch) {
           try {
-            await this.statusRepository?.markDisconnected(
-              supervision.instanceId,
-              this.workerId,
-              state.lastDisconnectReason,
-              supervision.epoch,
-            )
+            const persisted = await this.persistOwnedState(supervision, state)
+            if (persisted) await this.scheduleRestrictedRecovery(state)
           } catch (error: unknown) {
             firstError ??= error
           }
+        }
+        if (ownsExactEpoch) {
           try {
             await this.qrBootstrapRepository?.clear(
               supervision.instanceId,
@@ -771,14 +955,14 @@ export class WaSessionLifecycleService {
   }
 
   private async markConnecting(supervision: ActiveSupervision): Promise<void> {
-    if (supervision.lastStatusKey === 'connecting:') return
+    if (supervision.lastStatusKey === 'connecting::') return
     const persisted = await this.statusRepository?.markConnecting(
       supervision.instanceId,
       this.workerId,
       supervision.epoch,
     )
     if (persisted === false) throw new WaOwnershipError(supervision.instanceId, this.workerId, null)
-    supervision.lastStatusKey = 'connecting:'
+    supervision.lastStatusKey = 'connecting::'
   }
 
   private async persistState(
@@ -799,7 +983,7 @@ export class WaSessionLifecycleService {
       }
       if (!(await this.observeOwnership(supervision))) return false
     }
-    const statusKey = `${state.status}:${state.lastDisconnectReason ?? ''}`
+    const statusKey = `${state.status}:${state.lastDisconnectReason ?? ''}:${state.restrictedUntil?.toISOString() ?? ''}`
     if (supervision.lastStatusKey === statusKey) return true
 
     if (state.status === 'connecting') {
@@ -847,6 +1031,21 @@ export class WaSessionLifecycleService {
         await this.handleOwnershipLoss(supervision)
         return false
       }
+    } else if (state.status === 'restricted') {
+      if (!state.restrictedUntil) {
+        throw new TypeError('restricted session state requires restrictedUntil')
+      }
+      if (
+        (await this.statusRepository?.markRestricted(
+          state.instanceId,
+          this.workerId,
+          state.restrictedUntil,
+          supervision.epoch,
+        )) === false
+      ) {
+        await this.handleOwnershipLoss(supervision)
+        return false
+      }
     } else {
       if (
         (await this.statusRepository?.markDisconnected(
@@ -862,6 +1061,66 @@ export class WaSessionLifecycleService {
     }
     supervision.lastStatusKey = statusKey
     return true
+  }
+
+  private async persistOwnedState(
+    supervision: ActiveSupervision,
+    state: SessionState,
+  ): Promise<boolean> {
+    if (state.status === 'banned') {
+      return (
+        (await this.statusRepository?.markBanned(
+          state.instanceId,
+          this.workerId,
+          state.lastDisconnectReason,
+          supervision.epoch,
+        )) ?? true
+      )
+    }
+    if (state.status === 'restricted') {
+      if (!state.restrictedUntil) {
+        throw new TypeError('restricted session state requires restrictedUntil')
+      }
+      return (
+        (await this.statusRepository?.markRestricted(
+          state.instanceId,
+          this.workerId,
+          state.restrictedUntil,
+          supervision.epoch,
+        )) ?? true
+      )
+    }
+    if (state.status === 'logged_out') {
+      return (
+        (await this.statusRepository?.markLoggedOut(
+          state.instanceId,
+          this.workerId,
+          supervision.epoch,
+        )) ?? true
+      )
+    }
+    return (
+      (await this.statusRepository?.markDisconnected(
+        state.instanceId,
+        this.workerId,
+        state.lastDisconnectReason,
+        supervision.epoch,
+      )) ?? true
+    )
+  }
+
+  private async scheduleRestrictedRecovery(state: SessionState): Promise<void> {
+    if (state.status !== 'restricted') return
+    if (!state.restrictedUntil) {
+      throw new TypeError('restricted session state requires restrictedUntil')
+    }
+    if (!this.restrictionRecoveryScheduler) {
+      throw new Error('WA restriction recovery scheduler is not configured')
+    }
+    await this.restrictionRecoveryScheduler.scheduleRestrictedRecovery(
+      state.instanceId,
+      state.restrictedUntil,
+    )
   }
 
   private isActive(supervision: ActiveSupervision): boolean {

@@ -8,17 +8,23 @@ export const WA_LIFECYCLE_OWNER_RESULT_MAX_AGE_SECONDS = 300
 export const WA_LIFECYCLE_OWNER_RESULT_MAX_COUNT = 1_000
 export const START_WA_INSTANCE_JOB_NAME = 'start-wa-instance'
 export const STOP_WA_INSTANCE_JOB_NAME = 'stop-wa-instance'
+export const LOGOUT_WA_INSTANCE_JOB_NAME = 'logout-wa-instance'
+export const RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME = 'recover-restricted-wa-instance'
 export const RENEW_WA_INSTANCE_JOB_NAME = 'renew-wa-instance'
 
 export const WA_LIFECYCLE_JOB_NAMES = [
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
+  LOGOUT_WA_INSTANCE_JOB_NAME,
+  RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
   RENEW_WA_INSTANCE_JOB_NAME,
 ] as const
 
 export type WaLifecycleJobName = (typeof WA_LIFECYCLE_JOB_NAMES)[number]
 export type WaLifecycleOwnerJobName =
-  typeof STOP_WA_INSTANCE_JOB_NAME | typeof RENEW_WA_INSTANCE_JOB_NAME
+  | typeof STOP_WA_INSTANCE_JOB_NAME
+  | typeof LOGOUT_WA_INSTANCE_JOB_NAME
+  | typeof RENEW_WA_INSTANCE_JOB_NAME
 
 export interface WaLifecycleInstanceJobPayload {
   instanceId: string
@@ -31,6 +37,10 @@ export interface WaLifecycleOwnerCommandJobPayload extends WaLifecycleInstanceJo
 
 export type StartWaInstanceJobPayload = WaLifecycleInstanceJobPayload
 export type StopWaInstanceJobPayload = WaLifecycleInstanceJobPayload
+export type LogoutWaInstanceJobPayload = WaLifecycleInstanceJobPayload
+export interface RecoverRestrictedWaInstanceJobPayload extends WaLifecycleInstanceJobPayload {
+  restrictedUntil: string
+}
 export type RenewWaInstanceJobPayload = WaLifecycleInstanceJobPayload
 
 /**
@@ -139,7 +149,43 @@ export function parseStartWaInstanceJobPayload(payload: unknown): StartWaInstanc
   return parseWaLifecycleInstanceJobPayload(payload, START_WA_INSTANCE_JOB_NAME)
 }
 
+export function parseRecoverRestrictedWaInstanceJobPayload(
+  payload: unknown,
+): RecoverRestrictedWaInstanceJobPayload {
+  const instance = parseWaLifecycleInstanceJobPayload(
+    payload,
+    RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
+  )
+  if (!isRecord(payload) || typeof payload.restrictedUntil !== 'string') {
+    throwInvalidRecoverRestrictedWaInstancePayload()
+  }
+
+  const restrictedUntilMs = Date.parse(payload.restrictedUntil)
+  if (
+    !Number.isSafeInteger(restrictedUntilMs) ||
+    new Date(restrictedUntilMs).toISOString() !== payload.restrictedUntil
+  ) {
+    throwInvalidRecoverRestrictedWaInstancePayload()
+  }
+
+  return { ...instance, restrictedUntil: payload.restrictedUntil }
+}
+
+export function createRecoverRestrictedWaInstanceJobId(payload: unknown): string {
+  const parsed = parseRecoverRestrictedWaInstanceJobPayload(payload)
+
+  return [
+    'wa-lifecycle',
+    RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
+    encodeJobIdSegment(parsed.instanceId),
+    String(Date.parse(parsed.restrictedUntil)),
+  ].join('.')
+}
+
 export function createWaLifecycleJobId(jobName: WaLifecycleJobName, payload: unknown): string {
+  if (jobName === RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME) {
+    return createRecoverRestrictedWaInstanceJobId(payload)
+  }
   const { instanceId } = parseWaLifecycleInstanceJobPayload(payload, jobName)
 
   return `wa-lifecycle.${encodeURIComponent(jobName)}.${encodeURIComponent(instanceId)}`
@@ -152,6 +198,12 @@ function throwInvalidWaLifecycleInstancePayload(jobName: WaLifecycleJobName): ne
 function throwInvalidWaLifecycleOwnerPayload(jobName: WaLifecycleOwnerJobName): never {
   throw new TypeError(
     `${jobName} owner payload must include a non-empty expectedOwnerWorkerId and positive expectedOwnerEpoch`,
+  )
+}
+
+function throwInvalidRecoverRestrictedWaInstancePayload(): never {
+  throw new TypeError(
+    `${RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME} payload.restrictedUntil must be a canonical ISO timestamp`,
   )
 }
 

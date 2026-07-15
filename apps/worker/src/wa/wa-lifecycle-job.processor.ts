@@ -1,11 +1,14 @@
 import { Inject, Injectable } from '@nestjs/common'
 import {
+  LOGOUT_WA_INSTANCE_JOB_NAME,
+  RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
   RENEW_WA_INSTANCE_JOB_NAME,
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
   WA_LIFECYCLE_OWNER_QUEUE_PREFIX,
   WA_LIFECYCLE_QUEUE_NAME,
   createWaLifecycleOwnerQueueName,
+  parseRecoverRestrictedWaInstanceJobPayload,
   parseWaLifecycleOwnerCommandJobPayload,
   parseWaLifecycleInstanceJobPayload,
 } from '@smartmessage/queue'
@@ -14,6 +17,8 @@ import type { OwnerRegistry, SessionState, WaOwnership } from '@smartmessage/wa'
 
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
+import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
+import { PrismaWaRestrictedRecoveryService } from './prisma-wa-restricted-recovery.service'
 import { WA_OWNER_REGISTRY, WA_WORKER_ID } from './wa.tokens'
 
 export interface StartWaInstanceJobResult {
@@ -27,16 +32,36 @@ export interface StopWaInstanceJobResult {
   ownershipStale?: true
 }
 
+export interface LogoutWaInstanceJobResult {
+  instanceId: string
+  loggedOut: boolean
+  ownershipStale?: true
+}
+
 export interface RenewWaInstanceJobResult {
   instanceId: string
   renewed: boolean
   ownershipStale?: true
 }
 
-export type WaLifecycleJobResult =
-  StartWaInstanceJobResult | StopWaInstanceJobResult | RenewWaInstanceJobResult
+export interface RecoverRestrictedWaInstanceJobResult {
+  instanceId: string
+  recovery: 'stale' | 'rescheduled' | 'recovered'
+  restrictedUntil?: string
+  status?: SessionState['status']
+}
 
-type OwnerLifecycleJobName = typeof STOP_WA_INSTANCE_JOB_NAME | typeof RENEW_WA_INSTANCE_JOB_NAME
+export type WaLifecycleJobResult =
+  | StartWaInstanceJobResult
+  | StopWaInstanceJobResult
+  | RenewWaInstanceJobResult
+  | LogoutWaInstanceJobResult
+  | RecoverRestrictedWaInstanceJobResult
+
+type OwnerLifecycleJobName =
+  | typeof STOP_WA_INSTANCE_JOB_NAME
+  | typeof LOGOUT_WA_INSTANCE_JOB_NAME
+  | typeof RENEW_WA_INSTANCE_JOB_NAME
 
 interface OwnerCommandOutcome {
   completed: boolean
@@ -61,6 +86,8 @@ export class WaLifecycleJobProcessor {
     private readonly ownerRegistry: Pick<OwnerRegistry, 'getOwnership'>,
     @Inject(WA_WORKER_ID) private readonly workerId: string,
     private readonly queueService: WaLifecycleQueueService,
+    private readonly commandGuard: PrismaWaAccountCommandGuard,
+    private readonly restrictedRecovery: PrismaWaRestrictedRecoveryService,
   ) {}
 
   async process(
@@ -76,10 +103,46 @@ export class WaLifecycleJobProcessor {
           throw new TypeError(`WA start job cannot run on owner queue: ${queueName}`)
         }
         const payload = parseWaLifecycleInstanceJobPayload(job.data, START_WA_INSTANCE_JOB_NAME)
+        await this.commandGuard.assertCommandableInstance(
+          payload.instanceId,
+          START_WA_INSTANCE_JOB_NAME,
+        )
         const state = await this.commands.startInstance(payload.instanceId)
 
         return {
           instanceId: state.instanceId,
+          status: state.status,
+        }
+      }
+      case RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME: {
+        if (queueName !== WA_LIFECYCLE_QUEUE_NAME) {
+          throw new TypeError('WA restricted recovery job cannot run on owner queue')
+        }
+        const payload = parseRecoverRestrictedWaInstanceJobPayload(job.data)
+        const decision = await this.restrictedRecovery.resolve(payload)
+        if (decision.kind === 'stale') {
+          return { instanceId: payload.instanceId, recovery: 'stale' }
+        }
+        if (decision.kind === 'reschedule') {
+          await this.queueService.enqueueRestrictedRecovery(
+            payload.instanceId,
+            decision.restrictedUntil,
+          )
+          return {
+            instanceId: payload.instanceId,
+            recovery: 'rescheduled',
+            restrictedUntil: decision.restrictedUntil.toISOString(),
+          }
+        }
+
+        await this.commandGuard.assertCommandableInstance(
+          payload.instanceId,
+          START_WA_INSTANCE_JOB_NAME,
+        )
+        const state = await this.commands.startInstance(payload.instanceId)
+        return {
+          instanceId: state.instanceId,
+          recovery: 'recovered',
           status: state.status,
         }
       }
@@ -98,6 +161,24 @@ export class WaLifecycleJobProcessor {
           instanceId: payload.instanceId,
           stopped: stopped.completed,
           ...(stopped.ownershipStale ? { ownershipStale: true as const } : {}),
+        }
+      }
+      case LOGOUT_WA_INSTANCE_JOB_NAME: {
+        const payload = parseWaLifecycleInstanceJobPayload(job.data, LOGOUT_WA_INSTANCE_JOB_NAME)
+        const loggedOut = await this.processOwnerCommand(
+          LOGOUT_WA_INSTANCE_JOB_NAME,
+          payload.instanceId,
+          queueName,
+          job.data,
+          job,
+          (expectedOwnership) =>
+            this.commands.logoutInstance(payload.instanceId, expectedOwnership?.epoch),
+        )
+
+        return {
+          instanceId: payload.instanceId,
+          loggedOut: loggedOut.completed,
+          ...(loggedOut.ownershipStale ? { ownershipStale: true as const } : {}),
         }
       }
       case RENEW_WA_INSTANCE_JOB_NAME: {
@@ -128,12 +209,14 @@ export class WaLifecycleJobProcessor {
     queueName: string,
     rawPayload: unknown,
     genericJob: Partial<Pick<Job<unknown>, 'id' | 'timestamp'>>,
-    executeLocally: () => Promise<boolean>,
+    executeLocally: (expectedOwnership?: WaOwnership) => Promise<boolean>,
   ): Promise<OwnerCommandOutcome> {
     if (queueName === WA_LIFECYCLE_QUEUE_NAME) {
       const ownership = await this.ownerRegistry.getOwnership(instanceId)
       if (!ownership) {
-        return { completed: await this.resolveMissingOwner(jobName, instanceId) }
+        return {
+          completed: await this.resolveMissingOwner(jobName, instanceId, executeLocally),
+        }
       }
 
       const result = parseOwnerCommandResult(
@@ -165,7 +248,7 @@ export class WaLifecycleJobProcessor {
     const currentOwnership = await this.ownerRegistry.getOwnership(instanceId)
     if (!sameOwnership(currentOwnership, expectedOwnership)) return staleOwnershipOutcome()
 
-    const completed = await executeLocally()
+    const completed = await executeLocally(expectedOwnership)
     if (completed) return { completed: true }
 
     const ownershipAfterCommand = await this.ownerRegistry.getOwnership(instanceId)
@@ -179,12 +262,13 @@ export class WaLifecycleJobProcessor {
   private async resolveMissingOwner(
     jobName: OwnerLifecycleJobName,
     instanceId: string,
+    executeLocally: (expectedOwnership?: WaOwnership) => Promise<boolean>,
   ): Promise<boolean> {
     if (await this.queueService.hasPendingStart(instanceId)) {
       throw new WaLifecycleOwnerUnavailableError(instanceId, jobName)
     }
 
-    return false
+    return jobName === LOGOUT_WA_INSTANCE_JOB_NAME ? executeLocally() : false
   }
 
   private enqueueForOwner(
@@ -193,9 +277,13 @@ export class WaLifecycleJobProcessor {
     ownership: WaOwnership,
     commandId?: string,
   ): Promise<unknown> {
-    return jobName === STOP_WA_INSTANCE_JOB_NAME
-      ? this.queueService.enqueueStop(instanceId, ownership)
-      : this.queueService.enqueueRenew(instanceId, ownership, commandId)
+    if (jobName === STOP_WA_INSTANCE_JOB_NAME) {
+      return this.queueService.enqueueStop(instanceId, ownership)
+    }
+    if (jobName === LOGOUT_WA_INSTANCE_JOB_NAME) {
+      return this.queueService.enqueueLogout(instanceId, ownership)
+    }
+    return this.queueService.enqueueRenew(instanceId, ownership, commandId)
   }
 }
 
@@ -217,7 +305,12 @@ function parseOwnerCommandResult(
     throw new TypeError(`Invalid owner result for ${jobName}: ${instanceId}`)
   }
 
-  const resultKey = jobName === STOP_WA_INSTANCE_JOB_NAME ? 'stopped' : 'renewed'
+  const resultKey =
+    jobName === STOP_WA_INSTANCE_JOB_NAME
+      ? 'stopped'
+      : jobName === LOGOUT_WA_INSTANCE_JOB_NAME
+        ? 'loggedOut'
+        : 'renewed'
   const completed = result[resultKey]
   if (typeof completed !== 'boolean') {
     throw new TypeError(`Invalid owner result for ${jobName}: ${instanceId}`)

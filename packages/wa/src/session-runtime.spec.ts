@@ -4,6 +4,7 @@ import { InMemoryWaAuthStateStore } from './auth-state'
 import type { OwnerClaimResult, OwnerRegistry } from './owner-registry'
 import { InMemoryWaQrBootstrapRepository } from './qr-bootstrap'
 import { createBaileysSessionRuntime } from './session-runtime'
+import type { WaRestrictionRecoveryScheduler } from './session-lifecycle'
 import { InMemoryWaAccountStatusRepository } from './status-repository'
 import type { WaTransportCallbacks, WaTransportFactory } from './transport'
 
@@ -64,6 +65,27 @@ describe('createBaileysSessionRuntime', () => {
     await runtime.lifecycle.stop('instance-restored')
   })
 
+  it('clears offline persisted auth through lifecycle logout without opening a socket', async () => {
+    const auth = new InMemoryWaAuthStateStore()
+    await auth.write('instance-offline-logout', {
+      creds: { registered: true },
+      keys: {},
+    })
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const qr = new InMemoryWaQrBootstrapRepository()
+    const transport = createEventTransport(true)
+    const runtime = createHarness(transport, { auth, statuses, qr })
+
+    await expect(runtime.lifecycle.logout('instance-offline-logout')).resolves.toBe(true)
+
+    expect(transport.connect).not.toHaveBeenCalled()
+    expect(transport.logout).not.toHaveBeenCalled()
+    expect(transport.closeTransport).not.toHaveBeenCalled()
+    await expect(auth.has('instance-offline-logout')).resolves.toBe(false)
+    expect(statuses.getLast('instance-offline-logout')).toMatchObject({ status: 'logged_out' })
+    await expect(qr.getLatest('instance-offline-logout')).resolves.toBeNull()
+  })
+
   it('drains a disconnect published before the initial connect call resolves', async () => {
     const auth = new InMemoryWaAuthStateStore()
     await auth.write('instance-early-disconnect', {
@@ -89,6 +111,31 @@ describe('createBaileysSessionRuntime', () => {
     expect(transport.logout).not.toHaveBeenCalled()
     await runtime.lifecycle.stop('instance-early-disconnect')
   })
+
+  it('persists and durably schedules a restricted disconnect without reconnecting', async () => {
+    const transport = createEventTransport(true)
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const recovery: WaRestrictionRecoveryScheduler = {
+      scheduleRestrictedRecovery: vi.fn(async () => undefined),
+    }
+    const restrictedUntil = new Date('2026-07-16T12:00:00.000Z')
+    const runtime = createHarness(transport, { statuses, recovery })
+
+    await runtime.lifecycle.start('instance-runtime-restricted')
+    await transport.emitDisconnected('instance-runtime-restricted', 'restricted', restrictedUntil)
+    await waitUntil(() => statuses.getLast('instance-runtime-restricted')?.status === 'restricted')
+
+    expect(statuses.getLast('instance-runtime-restricted')).toMatchObject({
+      status: 'restricted',
+      restrictedUntil,
+    })
+    expect(recovery.scheduleRestrictedRecovery).toHaveBeenCalledWith(
+      'instance-runtime-restricted',
+      restrictedUntil,
+    )
+    expect(transport.connect).toHaveBeenCalledOnce()
+    expect(transport.logout).not.toHaveBeenCalled()
+  })
 })
 
 function createHarness(
@@ -97,6 +144,7 @@ function createHarness(
     auth?: InMemoryWaAuthStateStore
     statuses?: InMemoryWaAccountStatusRepository
     qr?: InMemoryWaQrBootstrapRepository
+    recovery?: WaRestrictionRecoveryScheduler
   } = {},
 ) {
   return createBaileysSessionRuntime({
@@ -106,6 +154,7 @@ function createHarness(
     ttlMs: 10_000,
     statusRepository: overrides.statuses ?? new InMemoryWaAccountStatusRepository(),
     qrBootstrapRepository: overrides.qr ?? new InMemoryWaQrBootstrapRepository(),
+    restrictionRecoveryScheduler: overrides.recovery,
     transport,
   })
 }
@@ -116,7 +165,11 @@ interface EventTransport extends WaTransportFactory {
   logout: ReturnType<typeof vi.fn<WaTransportFactory['logout']>>
   emitQr(instanceId: string, qrCode: string, expiresAt: Date): Promise<void>
   emitConnected(instanceId: string): Promise<void>
-  emitDisconnected(instanceId: string, reason: 'transient'): Promise<void>
+  emitDisconnected(
+    instanceId: string,
+    reason: 'transient' | 'restricted',
+    restrictedUntil?: Date,
+  ): Promise<void>
 }
 
 function createEventTransport(hasAuthState = false): EventTransport {
@@ -158,8 +211,12 @@ function createEventTransport(hasAuthState = false): EventTransport {
         state: { instanceId, status: 'connected', hasAuthState: true, logoutCount: 0 },
       })
     },
-    async emitDisconnected(instanceId, reason) {
-      await callbacks.get(instanceId)?.onDisconnected?.({ instanceId, reason })
+    async emitDisconnected(instanceId, reason, restrictedUntil) {
+      await callbacks.get(instanceId)?.onDisconnected?.({
+        instanceId,
+        reason,
+        ...(restrictedUntil ? { restrictedUntil } : {}),
+      })
     },
   }
 }

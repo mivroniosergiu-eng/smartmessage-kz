@@ -26,12 +26,15 @@ import {
   WaAccountAdminInvalidInputError,
   WaAccountAdminTeamNotFoundError,
 } from './prisma-wa-account-admin.service'
-import { WaAccountCommandTargetNotFoundError } from './prisma-wa-account-command.guard'
+import {
+  WaAccountCommandBlockedError,
+  WaAccountCommandTargetNotFoundError,
+} from './prisma-wa-account-command.guard'
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { WA_QR_BOOTSTRAP_REPOSITORY } from './wa.tokens'
 
-type WaLifecycleCommand = 'start' | 'stop' | 'renew'
+type WaLifecycleCommand = 'start' | 'stop' | 'logout' | 'renew'
 
 interface WaAccountDto {
   id: string
@@ -130,6 +133,11 @@ export class WaAccountController {
     return this.enqueueLifecycleCommand('stop', instanceId)
   }
 
+  @Post(':instanceId/logout')
+  logoutAccount(@Param('instanceId') instanceId: unknown): Promise<WaLifecycleCommandDto> {
+    return this.enqueueLifecycleCommand('logout', instanceId)
+  }
+
   @Post(':instanceId/renew')
   renewAccount(@Param('instanceId') instanceId: unknown): Promise<WaLifecycleCommandDto> {
     return this.enqueueLifecycleCommand('renew', instanceId)
@@ -146,6 +154,8 @@ export class WaAccountController {
         await this.commandQueue.enqueueStart(normalizedInstanceId)
       } else if (command === 'stop') {
         await this.commandQueue.enqueueStop(normalizedInstanceId)
+      } else if (command === 'logout') {
+        await this.commandQueue.enqueueLogout(normalizedInstanceId)
       } else {
         await this.commandQueue.enqueueRenew(normalizedInstanceId)
       }
@@ -198,6 +208,9 @@ function mapWaHttpError(error: unknown): HttpException {
   }
   if (error instanceof WaAccountCommandTargetNotFoundError) {
     return new NotFoundException(error.message)
+  }
+  if (error instanceof WaAccountCommandBlockedError) {
+    return new ConflictException(error.message)
   }
 
   throw error

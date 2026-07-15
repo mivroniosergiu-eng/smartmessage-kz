@@ -3,7 +3,7 @@ import type { SessionState, WaSessionLifecycleService } from '@smartmessage/wa'
 
 import { WA_SESSION_LIFECYCLE } from './wa.tokens'
 
-type WaLifecyclePort = Pick<WaSessionLifecycleService, 'start' | 'stop' | 'renew'>
+type WaLifecyclePort = Pick<WaSessionLifecycleService, 'start' | 'stop' | 'logout' | 'renew'>
 
 @Injectable()
 export class WaLifecycleCommandService {
@@ -15,6 +15,10 @@ export class WaLifecycleCommandService {
 
   async stopInstance(instanceId: string): Promise<boolean> {
     return this.lifecycle.stop(normalizeInstanceId(instanceId))
+  }
+
+  async logoutInstance(instanceId: string, expectedEpoch?: bigint): Promise<boolean> {
+    return this.lifecycle.logout(normalizeInstanceId(instanceId), expectedEpoch)
   }
 
   async renewInstance(instanceId: string): Promise<boolean> {

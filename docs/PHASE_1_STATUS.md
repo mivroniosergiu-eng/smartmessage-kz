@@ -26,10 +26,13 @@
 - стабильный `WA_WORKER_ID` deployment-слота защищён Redis exact-token lease; immediate и periodic renew имеют deadline `ttlMs/3`, consumers остаются `autorun: false` до привязки loss-supervisor и проверяют identity перед каждой job; duplicate live process не стартует, потеря/timeout renew fail-closed останавливает intake и transports, а owner queue не растут с каждым рестартом;
 - graceful shutdown без ожидания зависших BullMQ jobs останавливает intake обоих workers и активирует bounded physical transport close. Identity lease освобождается только после успешного закрытия sessions и обоих consumers; при ошибке lease сохраняется до TTL, а fatal termination запускается до queue/Redis/Prisma cleanup;
 - stop/renew revalidate Redis owner при исполнении; общая BullMQ-job ждёт owner ack в пределах единого deadline для readiness/enqueue/result, переживает падение/migration и привязывает directed job к конкретной epoch. Renew дополнительно получает уникальный per-command id с сохранением между retry, поэтому новый heartbeat в той же epoch не поглощается retained result старой команды.
+- явный logout проходит через durable generic → exact owner+epoch job, очищает auth-state/QR без открытия socket для offline-сессии и не понижает `BANNED`;
+- Baileys 403/429 классифицируются как `banned`/`restricted`; cooldown имеет безопасный диапазон 1 минута–7 дней, повторное событие не сокращает `restrictedUntil`;
+- `RESTRICTED` закрывает transport без logout и восстанавливается через точный delayed BullMQ job; DB-authoritative execution и startup reconciliation исключают ранний/stale reconnect;
+- `BANNED` монотонно блокирует producer, execution и ownership start-gates после рестарта; fenced переход создаёт один санитизированный `AuditLog`.
 
 ## Остаток до DoD Фазы 1
 
-- явный logout и полный restricted/banned operational contract;
 - receiver skeleton: `messages.upsert/update` → типизированные доменные события без автоответа;
 - асинхронная phone validation queue и enum-переходы Contact;
 - идемпотентная одиночная text-отправка с `MessageLog`;

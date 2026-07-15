@@ -1,6 +1,8 @@
 import 'reflect-metadata'
 
 import {
+  LOGOUT_WA_INSTANCE_JOB_NAME,
+  RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
   RENEW_WA_INSTANCE_JOB_NAME,
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
@@ -21,7 +23,7 @@ describe('WaLifecycleJobProcessor', () => {
     const command = createCommandMock({
       startInstance: vi.fn(async () => createSessionState('instance-1', 'connected')),
     })
-    const { processor } = createProcessor(command)
+    const { commandGuard, processor } = createProcessor(command)
 
     await expect(
       processor.process({
@@ -29,7 +31,127 @@ describe('WaLifecycleJobProcessor', () => {
         data: { instanceId: ' instance-1 ' },
       }),
     ).resolves.toEqual({ instanceId: 'instance-1', status: 'connected' })
+    expect(commandGuard.assertCommandableInstance).toHaveBeenCalledWith(
+      'instance-1',
+      START_WA_INSTANCE_JOB_NAME,
+    )
     expect(command.startInstance).toHaveBeenCalledWith('instance-1')
+    expect(commandGuard.assertCommandableInstance.mock.invocationCallOrder[0]).toBeLessThan(
+      command.startInstance.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    )
+  })
+
+  it('rechecks queued start authorization at execution and blocks side effects on rejection', async () => {
+    const command = createCommandMock()
+    const { commandGuard, processor } = createProcessor(command)
+    const blocked = new Error('start blocked by current persisted status')
+    commandGuard.assertCommandableInstance.mockRejectedValueOnce(blocked)
+
+    await expect(
+      processor.process({
+        name: START_WA_INSTANCE_JOB_NAME,
+        data: { instanceId: 'instance-blocked-after-enqueue' },
+      }),
+    ).rejects.toBe(blocked)
+
+    expect(command.startInstance).not.toHaveBeenCalled()
+  })
+
+  it('returns stale recovery without start or reschedule side effects', async () => {
+    const command = createCommandMock()
+    const { commandGuard, processor, queueService, restrictedRecovery } = createProcessor(command)
+    restrictedRecovery.resolve.mockResolvedValueOnce({ kind: 'stale' })
+
+    await expect(
+      processor.process({
+        name: RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
+        data: {
+          instanceId: 'instance-stale-recovery',
+          restrictedUntil: '2026-07-15T13:00:00.000Z',
+        },
+      }),
+    ).resolves.toEqual({ instanceId: 'instance-stale-recovery', recovery: 'stale' })
+
+    expect(queueService.enqueueRestrictedRecovery).not.toHaveBeenCalled()
+    expect(commandGuard.assertCommandableInstance).not.toHaveBeenCalled()
+    expect(command.startInstance).not.toHaveBeenCalled()
+  })
+
+  it('reschedules recovery for the current authoritative future deadline', async () => {
+    const command = createCommandMock()
+    const { commandGuard, processor, queueService, restrictedRecovery } = createProcessor(command)
+    const restrictedUntil = new Date('2026-07-15T14:00:00.000Z')
+    restrictedRecovery.resolve.mockResolvedValueOnce({ kind: 'reschedule', restrictedUntil })
+
+    await expect(
+      processor.process({
+        name: RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
+        data: {
+          instanceId: 'instance-rescheduled-recovery',
+          restrictedUntil: '2026-07-15T13:00:00.000Z',
+        },
+      }),
+    ).resolves.toEqual({
+      instanceId: 'instance-rescheduled-recovery',
+      recovery: 'rescheduled',
+      restrictedUntil: '2026-07-15T14:00:00.000Z',
+    })
+
+    expect(queueService.enqueueRestrictedRecovery).toHaveBeenCalledWith(
+      'instance-rescheduled-recovery',
+      restrictedUntil,
+    )
+    expect(commandGuard.assertCommandableInstance).not.toHaveBeenCalled()
+    expect(command.startInstance).not.toHaveBeenCalled()
+  })
+
+  it('rechecks start authorization and starts once for an exact due recovery', async () => {
+    const command = createCommandMock({
+      startInstance: vi.fn(async () => createSessionState('instance-recovered', 'connecting')),
+    })
+    const { commandGuard, processor, restrictedRecovery } = createProcessor(command)
+    restrictedRecovery.resolve.mockResolvedValueOnce({ kind: 'recover' })
+
+    await expect(
+      processor.process({
+        name: RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
+        data: {
+          instanceId: 'instance-recovered',
+          restrictedUntil: '2000-01-01T00:00:00.000Z',
+        },
+      }),
+    ).resolves.toEqual({
+      instanceId: 'instance-recovered',
+      recovery: 'recovered',
+      status: 'connecting',
+    })
+
+    expect(commandGuard.assertCommandableInstance).toHaveBeenCalledOnce()
+    expect(commandGuard.assertCommandableInstance).toHaveBeenCalledWith(
+      'instance-recovered',
+      START_WA_INSTANCE_JOB_NAME,
+    )
+    expect(command.startInstance).toHaveBeenCalledOnce()
+    expect(command.startInstance).toHaveBeenCalledWith('instance-recovered')
+  })
+
+  it('rejects restricted recovery on an owner-directed queue', async () => {
+    const command = createCommandMock()
+    const { processor, restrictedRecovery } = createProcessor(command)
+
+    await expect(
+      processor.process({
+        name: RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
+        data: {
+          instanceId: 'instance-wrong-recovery-queue',
+          restrictedUntil: '2026-07-15T13:00:00.000Z',
+        },
+        queueName: createWaLifecycleOwnerQueueName('worker-local'),
+      }),
+    ).rejects.toThrow('WA restricted recovery job cannot run on owner queue')
+
+    expect(restrictedRecovery.resolve).not.toHaveBeenCalled()
+    expect(command.startInstance).not.toHaveBeenCalled()
   })
 
   it('stop job calls command service and returns stopped result', async () => {
@@ -74,6 +196,26 @@ describe('WaLifecycleJobProcessor', () => {
     expect(command.renewInstance).toHaveBeenCalledWith('instance-3')
     expect(command.startInstance).not.toHaveBeenCalled()
     expect(command.stopInstance).not.toHaveBeenCalled()
+  })
+
+  it('directed logout calls lifecycle with the exact expected epoch', async () => {
+    const command = createCommandMock({
+      logoutInstance: vi.fn(async () => true),
+    })
+    const { processor } = createProcessor(command, { epoch: 7n })
+
+    await expect(
+      processor.process({
+        name: LOGOUT_WA_INSTANCE_JOB_NAME,
+        data: {
+          instanceId: ' instance-logout ',
+          expectedOwnerWorkerId: 'worker-local',
+          expectedOwnerEpoch: '7',
+        },
+        queueName: createWaLifecycleOwnerQueueName('worker-local'),
+      }),
+    ).resolves.toEqual({ instanceId: 'instance-logout', loggedOut: true })
+    expect(command.logoutInstance).toHaveBeenCalledWith('instance-logout', 7n)
   })
 
   it('invalid payload rejects before command call', async () => {
@@ -187,6 +329,28 @@ describe('WaLifecycleJobProcessor', () => {
       'wa-lifecycle.renew-wa-instance.instance-owned@1784111200000',
     )
     expect(command.renewInstance).not.toHaveBeenCalled()
+  })
+
+  it('reroutes logout to the exact current owner and waits for its ack', async () => {
+    const command = createCommandMock()
+    const { processor, queueService } = createProcessor(command, {
+      owner: 'worker-owner',
+      epoch: 4n,
+      workerId: 'worker-other',
+    })
+
+    await expect(
+      processor.process({
+        name: LOGOUT_WA_INSTANCE_JOB_NAME,
+        data: { instanceId: 'instance-owned-logout' },
+      }),
+    ).resolves.toEqual({ instanceId: 'instance-owned-logout', loggedOut: true })
+
+    expect(queueService.enqueueLogout).toHaveBeenCalledWith('instance-owned-logout', {
+      owner: 'worker-owner',
+      epoch: 4n,
+    })
+    expect(command.logoutInstance).not.toHaveBeenCalled()
   })
 
   it('retries a stale ack and routes the next generic attempt to the fresh epoch', async () => {
@@ -333,6 +497,34 @@ describe('WaLifecycleJobProcessor', () => {
     expect(queueService.enqueueStop).not.toHaveBeenCalled()
   })
 
+  it('never lets an orphaned directed logout claim a newer epoch', async () => {
+    const command = createCommandMock()
+    const { processor, queueService } = createProcessor(command, {
+      owner: 'worker-stable',
+      epoch: 9n,
+      workerId: 'worker-stable',
+    })
+
+    await expect(
+      processor.process({
+        name: LOGOUT_WA_INSTANCE_JOB_NAME,
+        data: {
+          instanceId: 'instance-stale-logout',
+          expectedOwnerWorkerId: 'worker-stable',
+          expectedOwnerEpoch: '8',
+        },
+        queueName: createWaLifecycleOwnerQueueName('worker-stable'),
+      }),
+    ).resolves.toEqual({
+      instanceId: 'instance-stale-logout',
+      loggedOut: false,
+      ownershipStale: true,
+    })
+
+    expect(command.logoutInstance).not.toHaveBeenCalled()
+    expect(queueService.enqueueLogout).not.toHaveBeenCalled()
+  })
+
   it('reuses a stable worker queue after crash while fencing the prior generation epoch', async () => {
     const command = createCommandMock({
       stopInstance: vi.fn(async () => true),
@@ -455,6 +647,21 @@ describe('WaLifecycleJobProcessor', () => {
     expect(queueService.hasPendingStart).toHaveBeenCalledWith('instance-stopped')
     expect(command.stopInstance).not.toHaveBeenCalled()
   })
+
+  it('claims through lifecycle logout when no owner or pending start exists', async () => {
+    const command = createCommandMock({ logoutInstance: vi.fn(async () => true) })
+    const { processor, queueService } = createProcessor(command, { owner: null })
+
+    await expect(
+      processor.process({
+        name: LOGOUT_WA_INSTANCE_JOB_NAME,
+        data: { instanceId: 'instance-offline-logout' },
+      }),
+    ).resolves.toEqual({ instanceId: 'instance-offline-logout', loggedOut: true })
+
+    expect(queueService.hasPendingStart).toHaveBeenCalledWith('instance-offline-logout')
+    expect(command.logoutInstance).toHaveBeenCalledWith('instance-offline-logout', undefined)
+  })
 })
 
 function createProcessor(
@@ -470,18 +677,30 @@ function createProcessor(
   }
   const queueService = {
     enqueueStop: vi.fn(async (instanceId: string) => ({ instanceId, stopped: true })),
+    enqueueLogout: vi.fn(async (instanceId: string) => ({ instanceId, loggedOut: true })),
     enqueueRenew: vi.fn(async (instanceId: string) => ({ instanceId, renewed: true })),
+    enqueueRestrictedRecovery: vi.fn(async () => ({ id: 'restricted-recovery-job' })),
     hasPendingStart: vi.fn(async () => false),
+  }
+  const commandGuard = {
+    assertCommandableInstance: vi.fn(async (instanceId: string) => ({ instanceId })),
+  }
+  const restrictedRecovery = {
+    resolve: vi.fn(async () => ({ kind: 'stale' as const })),
   }
 
   return {
     ownerRegistry,
     queueService,
+    commandGuard,
+    restrictedRecovery,
     processor: new WaLifecycleJobProcessor(
       command,
       ownerRegistry as never,
       options.workerId ?? 'worker-local',
       queueService as never,
+      commandGuard as never,
+      restrictedRecovery as never,
     ),
   }
 }
@@ -490,6 +709,7 @@ function createCommandMock(overrides: Partial<CommandMock> = {}): CommandMock {
   return {
     startInstance: vi.fn(async () => createSessionState('default-instance', 'connected')),
     stopInstance: vi.fn(async () => false),
+    logoutInstance: vi.fn(async () => false),
     renewInstance: vi.fn(async () => false),
     ...overrides,
   }
@@ -506,9 +726,12 @@ function createSessionState(instanceId: string, status: SessionState['status']):
 
 type CommandMock = Pick<
   WaLifecycleCommandService,
-  'startInstance' | 'stopInstance' | 'renewInstance'
+  'startInstance' | 'stopInstance' | 'logoutInstance' | 'renewInstance'
 > & {
   startInstance: ReturnType<typeof vi.fn<(instanceId: string) => Promise<SessionState>>>
   stopInstance: ReturnType<typeof vi.fn<(instanceId: string) => Promise<boolean>>>
+  logoutInstance: ReturnType<
+    typeof vi.fn<(instanceId: string, expectedEpoch?: bigint) => Promise<boolean>>
+  >
   renewInstance: ReturnType<typeof vi.fn<(instanceId: string) => Promise<boolean>>>
 }

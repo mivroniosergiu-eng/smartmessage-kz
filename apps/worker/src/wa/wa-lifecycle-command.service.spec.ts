@@ -27,6 +27,7 @@ describe('WaLifecycleCommandService', () => {
     )
     expect(lifecycle.start).not.toHaveBeenCalled()
     expect(lifecycle.stop).not.toHaveBeenCalled()
+    expect(lifecycle.logout).not.toHaveBeenCalled()
     expect(lifecycle.renew).not.toHaveBeenCalled()
   })
 
@@ -38,16 +39,19 @@ describe('WaLifecycleCommandService', () => {
     await expect(service.startInstance('instance-2')).rejects.toBe(error)
   })
 
-  it('stopInstance and renewInstance call lifecycle', async () => {
+  it('stopInstance, logoutInstance and renewInstance call lifecycle', async () => {
     const lifecycle = createLifecycleMock({
       stop: vi.fn(async () => true),
+      logout: vi.fn(async () => true),
       renew: vi.fn(async () => false),
     })
     const service = new WaLifecycleCommandService(lifecycle)
 
     await expect(service.stopInstance(' instance-3 ')).resolves.toBe(true)
+    await expect(service.logoutInstance(' instance-3 ', 7n)).resolves.toBe(true)
     await expect(service.renewInstance(' instance-3 ')).resolves.toBe(false)
     expect(lifecycle.stop).toHaveBeenCalledWith('instance-3')
+    expect(lifecycle.logout).toHaveBeenCalledWith('instance-3', 7n)
     expect(lifecycle.renew).toHaveBeenCalledWith('instance-3')
   })
 
@@ -87,6 +91,7 @@ function createLifecycleMock(overrides: Partial<LifecycleMock> = {}): LifecycleM
   return {
     start: vi.fn(async () => createSessionState('default-instance')),
     stop: vi.fn(async () => false),
+    logout: vi.fn(async () => false),
     renew: vi.fn(async () => false),
     shutdownAll: vi.fn(async () => undefined),
     ...overrides,
@@ -113,6 +118,7 @@ function createFakeRedisConnection(): unknown {
 interface LifecycleMock {
   start: ReturnType<typeof vi.fn<(instanceId: string) => Promise<SessionState>>>
   stop: ReturnType<typeof vi.fn<(instanceId: string) => Promise<boolean>>>
+  logout: ReturnType<typeof vi.fn<(instanceId: string, expectedEpoch?: bigint) => Promise<boolean>>>
   renew: ReturnType<typeof vi.fn<(instanceId: string) => Promise<boolean>>>
   shutdownAll: ReturnType<typeof vi.fn<() => Promise<void>>>
 }

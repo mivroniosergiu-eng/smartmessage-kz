@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { OwnerClaimResult, OwnerRegistry } from './owner-registry'
 import { WaOwnershipError } from './owned-session-manager'
 import { InMemoryWaQrBootstrapRepository, type WaQrPendingEvent } from './qr-bootstrap'
-import { WaSessionLifecycleService } from './session-lifecycle'
+import { WaSessionLifecycleService, type WaRestrictionRecoveryScheduler } from './session-lifecycle'
 import { MockSessionManager, type SessionState } from './session'
 import { InMemoryWaAccountStatusRepository } from './status-repository'
 
@@ -220,6 +220,19 @@ class DeferredCloseTransportSessionManager extends MockSessionManager {
   }
 }
 
+class DeferredLogoutSessionManager extends MockSessionManager {
+  readonly logoutStarted = createDeferred<void>()
+  readonly releaseLogout = createDeferred<void>()
+  logoutCalls = 0
+
+  async logout(instanceId: string): Promise<SessionState> {
+    this.logoutCalls += 1
+    this.logoutStarted.resolve(undefined)
+    await this.releaseLogout.promise
+    return super.logout(instanceId)
+  }
+}
+
 class FlakyCloseTransportSessionManager extends MockSessionManager {
   readonly closeCalls: string[] = []
 
@@ -266,6 +279,14 @@ class EventDrivenSessionManager extends MockSessionManager {
     }
     this.seed(state)
     return { ...state }
+  }
+}
+
+class RecordingRestrictionRecoveryScheduler implements WaRestrictionRecoveryScheduler {
+  readonly scheduled: Array<{ instanceId: string; restrictedUntil: Date }> = []
+
+  async scheduleRestrictedRecovery(instanceId: string, restrictedUntil: Date): Promise<void> {
+    this.scheduled.push({ instanceId, restrictedUntil: new Date(restrictedUntil) })
   }
 }
 
@@ -474,6 +495,102 @@ describe('WaSessionLifecycleService', () => {
     registry.clearRenewals()
     await delay(20)
     expect(registry.renewals).toEqual([])
+  })
+
+  it('explicitly logs out an active owned session before persisting and releasing it', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const qr = new InMemoryWaQrBootstrapRepository()
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-a',
+      registry,
+      sessions,
+      ttlMs,
+      statuses,
+      qr,
+    )
+    const logout = vi.spyOn(sessions, 'logout')
+    await lifecycle.start('instance-explicit-logout')
+    await lifecycle.recordQrPending(
+      'instance-explicit-logout',
+      'pending-qr',
+      new Date('2999-01-01T00:01:00.000Z'),
+    )
+
+    await expect(lifecycle.logout('instance-explicit-logout')).resolves.toBe(true)
+
+    expect(logout).toHaveBeenCalledOnce()
+    await expect(sessions.getState('instance-explicit-logout')).resolves.toMatchObject({
+      status: 'logged_out',
+      hasAuthState: false,
+      logoutCount: 1,
+    })
+    expect(statuses.getLast('instance-explicit-logout')).toMatchObject({ status: 'logged_out' })
+    await expect(qr.getLatest('instance-explicit-logout')).resolves.toBeNull()
+    await expect(registry.getOwner('instance-explicit-logout')).resolves.toBeNull()
+  })
+
+  it('claims an inactive instance so explicit logout can clear persisted auth safely', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    const logout = vi.spyOn(sessions, 'logout')
+
+    await expect(lifecycle.logout('instance-offline-logout')).resolves.toBe(true)
+
+    expect(logout).toHaveBeenCalledWith('instance-offline-logout')
+    expect(registry.claims).toHaveLength(1)
+    expect(statuses.getLast('instance-offline-logout')).toMatchObject({ status: 'logged_out' })
+    await expect(registry.getOwner('instance-offline-logout')).resolves.toBeNull()
+  })
+
+  it('does not execute explicit logout while another worker owns the instance', async () => {
+    const registry = new FakeOwnerRegistry()
+    registry.setOwner('instance-foreign-logout', 'worker-b')
+    const sessions = new MockSessionManager()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    const logout = vi.spyOn(sessions, 'logout')
+
+    await expect(lifecycle.logout('instance-foreign-logout')).resolves.toBe(false)
+
+    expect(logout).not.toHaveBeenCalled()
+    await expect(registry.getOwner('instance-foreign-logout')).resolves.toBe('worker-b')
+  })
+
+  it('coalesces concurrent duplicate logout into one destructive side effect', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new DeferredLogoutSessionManager()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    await lifecycle.start('instance-duplicate-logout')
+
+    const first = lifecycle.logout('instance-duplicate-logout')
+    await sessions.logoutStarted.promise
+    const duplicate = lifecycle.logout('instance-duplicate-logout')
+    expect(duplicate).toBe(first)
+    sessions.releaseLogout.resolve(undefined)
+
+    await expect(Promise.all([first, duplicate])).resolves.toEqual([true, true])
+    expect(sessions.logoutCalls).toBe(1)
+  })
+
+  it('does not claim a new epoch for a stale directed logout', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    await lifecycle.start('instance-stale-directed-logout')
+    const ownership = await registry.getOwnership('instance-stale-directed-logout')
+    if (!ownership) throw new Error('expected ownership')
+    registry.expireOwner('instance-stale-directed-logout')
+    const logout = vi.spyOn(sessions, 'logout')
+
+    await expect(lifecycle.logout('instance-stale-directed-logout', ownership.epoch)).resolves.toBe(
+      false,
+    )
+
+    expect(logout).not.toHaveBeenCalled()
+    expect(registry.claims).toHaveLength(1)
   })
 
   it('keeps renewing ownership while a slow transport close is in progress', async () => {
@@ -1188,6 +1305,107 @@ describe('WaSessionLifecycleService', () => {
     expect(closeTransport).toHaveBeenCalledOnce()
     expect(registry.events).toEqual(['closeTransport', 'release'])
     await expect(registry.getOwner('instance-terminal-ban')).resolves.toBeNull()
+  })
+
+  it('persists restricted cooldown, closes transport, schedules durable recovery, and releases owner', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new EventDrivenSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const recovery = new RecordingRestrictionRecoveryScheduler()
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-a',
+      registry,
+      sessions,
+      shortTtlMs,
+      statuses,
+      undefined,
+      recovery,
+    )
+    const closeTransport = vi.spyOn(sessions, 'closeTransport')
+    const restrictedUntil = new Date('2026-07-16T12:00:00.000Z')
+    await lifecycle.start('instance-restricted')
+    sessions.seed({
+      instanceId: 'instance-restricted',
+      status: 'restricted',
+      hasAuthState: true,
+      logoutCount: 0,
+      lastDisconnectReason: 'restricted',
+      restrictedUntil,
+    })
+    lifecycle.notifyState('instance-restricted')
+
+    await delay(20)
+
+    expect(statuses.getLast('instance-restricted')).toMatchObject({
+      status: 'restricted',
+      restrictedUntil,
+    })
+    expect(closeTransport).toHaveBeenCalledOnce()
+    expect(recovery.scheduled).toEqual([{ instanceId: 'instance-restricted', restrictedUntil }])
+    await expect(registry.getOwner('instance-restricted')).resolves.toBeNull()
+  })
+
+  it('keeps restricted ownership fail-closed when durable recovery cannot be scheduled', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new EventDrivenSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const recovery: WaRestrictionRecoveryScheduler = {
+      scheduleRestrictedRecovery: vi.fn().mockRejectedValue(new Error('queue unavailable')),
+    }
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-a',
+      registry,
+      sessions,
+      ttlMs,
+      statuses,
+      undefined,
+      recovery,
+    )
+    const restrictedUntil = new Date('2026-07-16T12:00:00.000Z')
+    await lifecycle.start('instance-restricted-fail-closed')
+    sessions.seed({
+      instanceId: 'instance-restricted-fail-closed',
+      status: 'restricted',
+      hasAuthState: true,
+      logoutCount: 0,
+      lastDisconnectReason: 'restricted',
+      restrictedUntil,
+    })
+    lifecycle.notifyState('instance-restricted-fail-closed')
+
+    await delay(20)
+
+    expect(statuses.getLast('instance-restricted-fail-closed')).toMatchObject({
+      status: 'restricted',
+      restrictedUntil,
+    })
+    await expect(registry.getOwner('instance-restricted-fail-closed')).resolves.toBe('worker-a')
+    vi.mocked(recovery.scheduleRestrictedRecovery).mockResolvedValueOnce(undefined)
+    await lifecycle.stop('instance-restricted-fail-closed')
+  })
+
+  it('cleans banned auth through explicit logout without downgrading terminal status', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new EventDrivenSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    await lifecycle.start('instance-banned-cleanup')
+    sessions.seed({
+      instanceId: 'instance-banned-cleanup',
+      status: 'banned',
+      hasAuthState: true,
+      logoutCount: 0,
+      lastDisconnectReason: 'banned',
+    })
+
+    await expect(lifecycle.logout('instance-banned-cleanup')).resolves.toBe(true)
+
+    expect(statuses.getLast('instance-banned-cleanup')).toMatchObject({ status: 'banned' })
+    await expect(sessions.getState('instance-banned-cleanup')).resolves.toMatchObject({
+      status: 'banned',
+      hasAuthState: false,
+    })
+    await expect(registry.getOwner('instance-banned-cleanup')).resolves.toBeNull()
   })
 
   it('does not turn status persistence failure into a false transport disconnect', async () => {

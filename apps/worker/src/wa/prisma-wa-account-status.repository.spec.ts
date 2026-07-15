@@ -136,6 +136,175 @@ describe('PrismaWaAccountStatusRepository', () => {
       status: WaAccountStatus.CONNECTING,
     })
   })
+
+  it('blocks ownership activation for banned and future-restricted accounts before connect', async () => {
+    const restrictedUntil = new Date('2999-01-01T00:00:00.000Z')
+    await createWaAccount('adapter-instance-banned')
+    await createWaAccount('adapter-instance-restricted-future')
+    await prisma.waAccount.update({
+      where: { instanceId: 'adapter-instance-banned' },
+      data: { status: WaAccountStatus.BANNED },
+    })
+    await prisma.waAccount.update({
+      where: { instanceId: 'adapter-instance-restricted-future' },
+      data: { status: WaAccountStatus.RESTRICTED, restrictedUntil },
+    })
+
+    await expect(
+      repository.activateOwnership('adapter-instance-banned', 'worker-a', 1n),
+    ).resolves.toBe(false)
+    await expect(
+      repository.activateOwnership('adapter-instance-restricted-future', 'worker-a', 1n),
+    ).resolves.toBe(false)
+
+    await expect(
+      prisma.waAccount.findUniqueOrThrow({ where: { instanceId: 'adapter-instance-banned' } }),
+    ).resolves.toMatchObject({ ownerWorkerId: null, ownershipEpoch: 0n })
+    await expect(
+      prisma.waAccount.findUniqueOrThrow({
+        where: { instanceId: 'adapter-instance-restricted-future' },
+      }),
+    ).resolves.toMatchObject({ ownerWorkerId: null, ownershipEpoch: 0n })
+  })
+
+  it('allows ownership activation once restrictedUntil is due', async () => {
+    const restrictedUntil = new Date('2000-01-01T00:00:00.000Z')
+    await createWaAccount('adapter-instance-restricted-due')
+    await prisma.waAccount.update({
+      where: { instanceId: 'adapter-instance-restricted-due' },
+      data: { status: WaAccountStatus.RESTRICTED, restrictedUntil },
+    })
+
+    await expect(
+      repository.activateOwnership('adapter-instance-restricted-due', 'worker-a', 1n),
+    ).resolves.toBe(true)
+
+    await expect(
+      prisma.waAccount.findUniqueOrThrow({
+        where: { instanceId: 'adapter-instance-restricted-due' },
+      }),
+    ).resolves.toMatchObject({
+      status: WaAccountStatus.RESTRICTED,
+      restrictedUntil,
+      ownerWorkerId: 'worker-a',
+      ownershipEpoch: 1n,
+    })
+  })
+
+  it('never shortens a restrictedUntil deadline under out-of-order delivery', async () => {
+    const later = new Date('2999-01-02T00:00:00.000Z')
+    const earlier = new Date('2999-01-01T00:00:00.000Z')
+    await createWaAccount('adapter-instance-restriction-max')
+    await repository.activateOwnership('adapter-instance-restriction-max', 'worker-a', 1n)
+
+    await expect(
+      repository.markRestricted('adapter-instance-restriction-max', 'worker-a', later, 1n),
+    ).resolves.toBe(true)
+    await expect(
+      repository.markRestricted('adapter-instance-restriction-max', 'worker-a', earlier, 1n),
+    ).resolves.toBe(true)
+
+    await expect(
+      prisma.waAccount.findUniqueOrThrow({
+        where: { instanceId: 'adapter-instance-restriction-max' },
+      }),
+    ).resolves.toMatchObject({
+      status: WaAccountStatus.RESTRICTED,
+      restrictedUntil: later,
+    })
+  })
+
+  it('keeps BANNED monotonic against every non-ban status writer', async () => {
+    await createWaAccount('adapter-instance-monotonic-ban')
+    await repository.activateOwnership('adapter-instance-monotonic-ban', 'worker-a', 1n)
+    await repository.markBanned('adapter-instance-monotonic-ban', 'worker-a', 'permanent_ban', 1n)
+
+    await expect(
+      repository.markConnecting('adapter-instance-monotonic-ban', 'worker-a', 1n),
+    ).resolves.toBe(false)
+    await expect(
+      repository.markConnected('adapter-instance-monotonic-ban', 'worker-a', 1n),
+    ).resolves.toBe(false)
+    await expect(
+      repository.markDisconnected(
+        'adapter-instance-monotonic-ban',
+        'worker-a',
+        'connection_closed',
+        1n,
+      ),
+    ).resolves.toBe(false)
+    await expect(
+      repository.markLoggedOut('adapter-instance-monotonic-ban', 'worker-a', 1n),
+    ).resolves.toBe(false)
+    await expect(
+      repository.markRestricted(
+        'adapter-instance-monotonic-ban',
+        'worker-a',
+        new Date('2999-01-01T00:00:00.000Z'),
+        1n,
+      ),
+    ).resolves.toBe(false)
+    await expect(
+      repository.activateOwnership('adapter-instance-monotonic-ban', 'worker-new', 2n),
+    ).resolves.toBe(false)
+
+    await expect(
+      prisma.waAccount.findUniqueOrThrow({
+        where: { instanceId: 'adapter-instance-monotonic-ban' },
+      }),
+    ).resolves.toMatchObject({
+      status: WaAccountStatus.BANNED,
+      pid: null,
+      restrictedUntil: null,
+      ownerWorkerId: 'worker-a',
+      ownershipEpoch: 1n,
+    })
+  })
+
+  it('creates exactly one sanitized ban AuditLog under concurrent duplicate delivery', async () => {
+    await createWaAccount('adapter-instance-ban-audit')
+    await repository.activateOwnership('adapter-instance-ban-audit', 'worker-a', 1n)
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        repository.markBanned(
+          'adapter-instance-ban-audit',
+          'worker-a',
+          'Bearer should-not-be-persisted\nstack trace',
+          1n,
+        ),
+      ),
+    )
+
+    expect(results).toEqual(Array.from({ length: 8 }, () => true))
+    const audits = await prisma.auditLog.findMany({ where: { teamId } })
+    expect(audits).toHaveLength(1)
+    expect(audits[0]).toMatchObject({
+      action: 'WA_ACCOUNT_BANNED',
+      userId: null,
+    })
+    expect(audits[0]?.details).toContain('adapter-instance-ban-audit')
+    expect(audits[0]?.details).not.toContain('Bearer')
+    expect(audits[0]?.details).not.toContain('stack trace')
+  })
+
+  it('does not audit or mutate a stale fenced ban command', async () => {
+    await createWaAccount('adapter-instance-stale-ban')
+    await repository.activateOwnership('adapter-instance-stale-ban', 'worker-new', 9n)
+
+    await expect(
+      repository.markBanned('adapter-instance-stale-ban', 'worker-old', 'permanent_ban', 8n),
+    ).resolves.toBe(false)
+
+    await expect(prisma.auditLog.findMany({ where: { teamId } })).resolves.toHaveLength(0)
+    await expect(
+      prisma.waAccount.findUniqueOrThrow({ where: { instanceId: 'adapter-instance-stale-ban' } }),
+    ).resolves.toMatchObject({
+      status: WaAccountStatus.DISCONNECTED,
+      ownerWorkerId: 'worker-new',
+      ownershipEpoch: 9n,
+    })
+  })
 })
 
 async function createWaAccount(instanceId: string, ownerTeamId = teamId): Promise<void> {

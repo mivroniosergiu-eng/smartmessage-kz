@@ -3,6 +3,7 @@ import 'reflect-metadata'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  LOGOUT_WA_INSTANCE_JOB_NAME,
   RENEW_WA_INSTANCE_JOB_NAME,
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
@@ -51,6 +52,18 @@ describe('WaLifecycleCommandQueueService', () => {
     expect(queueService.enqueueRenew).toHaveBeenCalledWith('instance-3')
   })
 
+  it('enqueueLogout delegates to the durable generic queue after target validation', async () => {
+    const { guard, queueService, service } = createService()
+
+    await service.enqueueLogout(' instance-logout ')
+
+    expect(guard.assertCommandableInstance).toHaveBeenCalledWith(
+      ' instance-logout ',
+      LOGOUT_WA_INSTANCE_JOB_NAME,
+    )
+    expect(queueService.enqueueLogout).toHaveBeenCalledWith('instance-logout')
+  })
+
   it('rejects missing accounts before delegating to the low-level queue producer', async () => {
     const error = new WaAccountCommandTargetNotFoundError('missing-instance')
     const { guard, queueService, service } = createService(error)
@@ -63,6 +76,7 @@ describe('WaLifecycleCommandQueueService', () => {
     )
     expect(queueService.enqueueStart).not.toHaveBeenCalled()
     expect(queueService.enqueueStop).not.toHaveBeenCalled()
+    expect(queueService.enqueueLogout).not.toHaveBeenCalled()
     expect(queueService.enqueueRenew).not.toHaveBeenCalled()
   })
 })
@@ -78,6 +92,7 @@ function createService(error?: Error): ServiceFixture {
   const queueService = {
     enqueueStart: vi.fn(async () => ({ id: 'start-job' })),
     enqueueStop: vi.fn(async () => ({ id: 'stop-job' })),
+    enqueueLogout: vi.fn(async () => ({ id: 'logout-job' })),
     enqueueRenew: vi.fn(async () => ({ id: 'renew-job' })),
   }
   return {
@@ -101,6 +116,7 @@ interface ServiceFixture {
   queueService: {
     enqueueStart: ReturnType<typeof vi.fn<(instanceId: string) => Promise<unknown>>>
     enqueueStop: ReturnType<typeof vi.fn<WaLifecycleQueueService['enqueueStop']>>
+    enqueueLogout: ReturnType<typeof vi.fn<WaLifecycleQueueService['enqueueLogout']>>
     enqueueRenew: ReturnType<typeof vi.fn<WaLifecycleQueueService['enqueueRenew']>>
   }
   service: WaLifecycleCommandQueueService

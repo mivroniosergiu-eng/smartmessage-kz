@@ -44,6 +44,7 @@ export interface WaTransportConnectedEvent {
 export interface WaTransportDisconnectedEvent {
   instanceId: string
   reason: WaDisconnectReason
+  restrictedUntil?: Date
 }
 
 export interface WaTransportLoggedOutEvent {

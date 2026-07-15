@@ -5,6 +5,7 @@ import type {
   WaConnectionStatus,
   WaDisconnectReason,
 } from './session'
+import { createWaRestrictedUntil } from './session'
 import {
   WaTransportAlreadyConnectedError,
   WaTransportNotConnectedError,
@@ -83,7 +84,7 @@ interface RuntimeSession {
   state: SessionState
   generation: number
   allowRecoveryConnect: boolean
-  requiresBannedTransportClose: boolean
+  requiresTerminalTransportClose: boolean
 }
 
 interface ActiveOperation {
@@ -122,6 +123,7 @@ export class BaileysSessionManager implements SessionManager {
       instanceId: normalizedInstanceId,
       status: 'connecting',
       lastDisconnectReason: undefined,
+      restrictedUntil: undefined,
     }
 
     try {
@@ -151,8 +153,8 @@ export class BaileysSessionManager implements SessionManager {
   async closeTransport(instanceId: string): Promise<SessionState> {
     const normalizedInstanceId = normalizeInstanceId(instanceId)
     const runtime = await this.ensureRuntime(normalizedInstanceId)
-    if (runtime.state.status === 'banned') {
-      return this.confirmBannedTransportClosed(normalizedInstanceId, runtime)
+    if (runtime.state.status === 'banned' || runtime.state.status === 'restricted') {
+      return this.confirmTerminalTransportClosed(normalizedInstanceId, runtime)
     }
     if (runtime.state.status !== 'connecting' && runtime.state.status !== 'connected') {
       return cloneState(runtime.state)
@@ -166,6 +168,11 @@ export class BaileysSessionManager implements SessionManager {
     const normalizedInstanceId = normalizeInstanceId(instanceId)
     const runtime = await this.ensureRuntime(normalizedInstanceId)
     if (runtime.state.status === 'logged_out') return cloneState(runtime.state)
+    if (runtime.state.status === 'banned') {
+      await this.authStateStore.clear(normalizedInstanceId)
+      runtime.state = { ...runtime.state, hasAuthState: false }
+      return cloneState(runtime.state)
+    }
     if (runtime.state.status !== 'connecting' && runtime.state.status !== 'connected') {
       return this.clearStoredAuthForLogout(normalizedInstanceId, runtime)
     }
@@ -177,7 +184,11 @@ export class BaileysSessionManager implements SessionManager {
     )
   }
 
-  async handleDisconnect(instanceId: string, reason: WaDisconnectReason): Promise<SessionState> {
+  async handleDisconnect(
+    instanceId: string,
+    reason: WaDisconnectReason,
+    restrictedUntil?: Date,
+  ): Promise<SessionState> {
     const normalizedInstanceId = normalizeInstanceId(instanceId)
     const runtime = await this.ensureRuntime(normalizedInstanceId)
     const activeOperation = this.operations.get(normalizedInstanceId)
@@ -187,7 +198,12 @@ export class BaileysSessionManager implements SessionManager {
     if (runtime.state.status === 'banned' || runtime.state.status === 'logged_out') {
       return cloneState(runtime.state)
     }
-    if (runtime.state.status === 'restricted' && reason !== 'banned' && reason !== 'logged_out') {
+    if (
+      runtime.state.status === 'restricted' &&
+      reason !== 'restricted' &&
+      reason !== 'banned' &&
+      reason !== 'logged_out'
+    ) {
       return cloneState(runtime.state)
     }
 
@@ -197,7 +213,8 @@ export class BaileysSessionManager implements SessionManager {
       runtime,
       generation,
       reason,
-      reason === 'banned',
+      reason === 'banned' || reason === 'restricted',
+      restrictedUntil,
     )
     return cloneState(runtime.state)
   }
@@ -233,11 +250,11 @@ export class BaileysSessionManager implements SessionManager {
     }
   }
 
-  private async confirmBannedTransportClosed(
+  private async confirmTerminalTransportClosed(
     instanceId: string,
     runtime: RuntimeSession,
   ): Promise<SessionState> {
-    if (!runtime.requiresBannedTransportClose) return cloneState(runtime.state)
+    if (!runtime.requiresTerminalTransportClose) return cloneState(runtime.state)
 
     const operation = this.reserveOperation(instanceId, runtime, 'close')
     try {
@@ -248,7 +265,7 @@ export class BaileysSessionManager implements SessionManager {
       this.releaseOperation(instanceId, operation.token)
     }
 
-    runtime.requiresBannedTransportClose = false
+    runtime.requiresTerminalTransportClose = false
     return cloneState(runtime.state)
   }
 
@@ -309,6 +326,7 @@ export class BaileysSessionManager implements SessionManager {
           hasAuthState: event.state?.hasAuthState ?? true,
           logoutCount: runtime.state.logoutCount,
           lastDisconnectReason: undefined,
+          restrictedUntil: undefined,
         }
         runtime.allowRecoveryConnect = false
         await this.dispatchObserver(instanceId, runtime, this.events.onConnected, {
@@ -319,7 +337,14 @@ export class BaileysSessionManager implements SessionManager {
       onDisconnected: async (event) => {
         const runtime = this.currentRuntime(instanceId, generation)
         if (!runtime) return
-        retiredState = await this.recordDisconnect(instanceId, runtime, generation, event.reason)
+        retiredState = await this.recordDisconnect(
+          instanceId,
+          runtime,
+          generation,
+          event.reason,
+          false,
+          event.restrictedUntil,
+        )
       },
       onLoggedOut: async () => {
         const runtime = this.currentRuntime(instanceId, generation)
@@ -343,15 +368,17 @@ export class BaileysSessionManager implements SessionManager {
     runtime: RuntimeSession,
     generation: number,
     reason: WaDisconnectReason,
-    requiresBannedTransportClose = false,
+    requiresTerminalTransportClose = false,
+    restrictedUntil?: Date,
   ): Promise<SessionState | undefined> {
     if (runtime.generation !== generation) return undefined
     if (reason === 'logged_out' && runtime.state.status === 'logged_out') {
       return cloneState(runtime.state)
     }
 
-    runtime.state = transitionDisconnect(runtime.state, reason)
-    runtime.requiresBannedTransportClose = reason === 'banned' && requiresBannedTransportClose
+    runtime.state = transitionDisconnect(runtime.state, reason, restrictedUntil)
+    runtime.requiresTerminalTransportClose =
+      (reason === 'banned' || reason === 'restricted') && requiresTerminalTransportClose
     const terminalState = cloneState(runtime.state)
     runtime.allowRecoveryConnect = false
     runtime.generation += 1
@@ -428,7 +455,7 @@ export class BaileysSessionManager implements SessionManager {
         },
         generation: 0,
         allowRecoveryConnect: false,
-        requiresBannedTransportClose: false,
+        requiresTerminalTransportClose: false,
       }
       this.sessions.set(instanceId, runtime)
       return runtime
@@ -535,20 +562,46 @@ function mergeTerminalCommandState(
   }
 }
 
-function transitionDisconnect(state: SessionState, reason: WaDisconnectReason): SessionState {
+function transitionDisconnect(
+  state: SessionState,
+  reason: WaDisconnectReason,
+  restrictedUntil?: Date,
+): SessionState {
   if (reason === 'logged_out') {
+    if (state.status === 'banned') {
+      return {
+        ...state,
+        hasAuthState: false,
+        logoutCount: state.logoutCount + 1,
+        restrictedUntil: undefined,
+      }
+    }
     return {
       ...state,
       status: 'logged_out',
       hasAuthState: false,
       logoutCount: state.logoutCount + 1,
       lastDisconnectReason: 'logged_out',
+      restrictedUntil: undefined,
+    }
+  }
+  if (reason === 'restricted') {
+    const candidate = restrictedUntil
+      ? normalizeRestrictedUntil(restrictedUntil)
+      : createWaRestrictedUntil(new Date())
+    const current = state.restrictedUntil?.getTime() ?? 0
+    return {
+      ...state,
+      status: 'restricted',
+      lastDisconnectReason: 'restricted',
+      restrictedUntil: new Date(Math.max(current, candidate.getTime())),
     }
   }
   return {
     ...state,
     status: statusFromDisconnect(reason),
     lastDisconnectReason: reason,
+    restrictedUntil: undefined,
   }
 }
 
@@ -567,5 +620,15 @@ function normalizeInstanceId(instanceId: string): string {
 }
 
 function cloneState(state: SessionState): SessionState {
-  return { ...state }
+  return {
+    ...state,
+    restrictedUntil: state.restrictedUntil ? new Date(state.restrictedUntil) : undefined,
+  }
+}
+
+function normalizeRestrictedUntil(value: Date): Date {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new TypeError('restrictedUntil must be a valid Date')
+  }
+  return new Date(value)
 }
