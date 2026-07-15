@@ -2,7 +2,7 @@
 
 - Исполнитель (агент/человек): Codex task-agent + независимый review-субагент
 - Ветка: `feat/phase-1-wa-session-supervisor`
-- PR: будет добавлен после открытия
+- PR: [#25](https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/25)
 
 ## Автотесты
 
@@ -51,4 +51,4 @@
 - Terminal banned освобождал ownership без явного physical-close barrier; manager и supervisor теперь подтверждают close до release.
 - Start rollback после ошибки close мог оставить broken transport под обычной supervision; rollback теперь повторяет close до подтверждения и только затем освобождает ownership и возвращает исходную start error.
 - Status visibility failure объявлялась transport failure; transport state и persistence error разведены.
-- Независимый review-субагент выполнил два blocker-pass; найденные P0/P1 закрыты TDD до финальных gate-ов.
+- Независимый review-субагент выполнил три blocker-pass; найденные P0/P1 закрыты TDD, финальный verdict — P0/P1 не обнаружено.
