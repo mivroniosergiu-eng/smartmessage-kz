@@ -5,6 +5,7 @@ import makeWASocket, {
   type SignalDataSet,
   type SignalDataTypeMap,
   type UserFacingSocketConfig,
+  type WASocket,
 } from '@whiskeysockets/baileys'
 
 import type { WaAuthStateJsonValue, WaAuthStateStore } from './auth-state'
@@ -15,19 +16,50 @@ import {
 } from './baileys-auth-state-mapper'
 import type { BaileysTransportConnectInput, BaileysTransportConnector } from './baileys-transport-adapter'
 import type { SessionState, WaDisconnectReason } from './session'
+import {
+  WaTransportAlreadyConnectedError,
+  WaTransportCloseTimeoutError,
+  WaTransportNotConnectedError,
+  WaTransportOperationInProgressError,
+  type WaTransportCallbacks,
+  type WaTransportSession,
+} from './transport'
 
 const DEFAULT_QR_TTL_MS = 60_000
+const DEFAULT_TRANSPORT_CLOSE_TIMEOUT_MS = 10_000
 const BINARY_JSON_MARKER = '__smartmessageWaBinary'
 
 export interface BaileysSocketTransportConnectorOptions {
   now?: () => Date
   qrTtlMs?: number
+  transportCloseTimeoutMs?: number
   socketConfig?: Omit<Partial<UserFacingSocketConfig>, 'auth' | 'printQRInTerminal'>
 }
 
+interface ActiveBaileysTransport {
+  socket: WASocket
+  callbacks?: WaTransportCallbacks
+  auth: StoreBackedAuthenticationState
+  phase: 'active' | 'closing' | 'logging_out' | 'remote_closing' | 'terminal_failed'
+  eventTail: Promise<void>
+  transportClosed: Promise<void>
+  resolveTransportClosed(): void
+}
+
+interface StoreBackedAuthenticationState extends AuthenticationState {
+  mergeCreds(update: Partial<AuthenticationState['creds']>): Promise<void>
+  deactivate(): void
+  drain(): Promise<void>
+}
+
 export class BaileysSocketTransportConnector implements BaileysTransportConnector {
+  private readonly activeTransports = new Map<string, ActiveBaileysTransport>()
+  private readonly openingTransports = new Set<string>()
+  private readonly terminalTransports = new Set<string>()
+  private readonly pendingAuthClears = new Set<string>()
   private readonly now: () => Date
   private readonly qrTtlMs: number
+  private readonly transportCloseTimeoutMs: number
   private readonly socketConfig: Omit<Partial<UserFacingSocketConfig>, 'auth' | 'printQRInTerminal'>
 
   constructor(
@@ -36,66 +68,326 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
   ) {
     this.now = options.now ?? (() => new Date())
     this.qrTtlMs = normalizeQrTtlMs(options.qrTtlMs ?? DEFAULT_QR_TTL_MS)
+    this.transportCloseTimeoutMs = normalizeTransportCloseTimeoutMs(
+      options.transportCloseTimeoutMs ?? DEFAULT_TRANSPORT_CLOSE_TIMEOUT_MS,
+    )
     this.socketConfig = options.socketConfig ?? {}
   }
 
   async connect(input: BaileysTransportConnectInput): Promise<SessionState> {
     const instanceId = normalizeInstanceId(input.instanceId)
-    const persistedState = await readBaileysAuthState(instanceId, this.authStateStore)
-    const auth = createStoreBackedAuthState(instanceId, persistedState, this.authStateStore)
-    const socket = makeWASocket({
-      ...this.socketConfig,
-      auth,
-      printQRInTerminal: false,
-    })
+    if (
+      this.activeTransports.has(instanceId) ||
+      this.openingTransports.has(instanceId) ||
+      this.terminalTransports.has(instanceId)
+    ) {
+      throw new WaTransportAlreadyConnectedError(instanceId)
+    }
+    this.openingTransports.add(instanceId)
 
-    socket.ev.on('creds.update', (update) => {
-      this.handleAsyncEvent(instanceId, input.callbacks, () => auth.mergeCreds(update))
-    })
-    socket.ev.on('connection.update', (update) => {
-      this.handleAsyncEvent(instanceId, input.callbacks, () =>
-        this.handleConnectionUpdate(instanceId, update, input.callbacks),
-      )
-    })
+    try {
+      if (this.pendingAuthClears.has(instanceId)) {
+        await this.authStateStore.clear(instanceId)
+        this.pendingAuthClears.delete(instanceId)
+      }
+      const persistedState = await readBaileysAuthState(instanceId, this.authStateStore)
+      const hasAuthState = await this.authStateStore.has(instanceId)
+      const auth = createStoreBackedAuthState(instanceId, persistedState, this.authStateStore)
+      const socket = makeWASocket({
+        ...this.socketConfig,
+        auth,
+        printQRInTerminal: false,
+      })
+      let resolveTransportClosed!: () => void
+      const transportClosed = new Promise<void>((resolve) => {
+        resolveTransportClosed = resolve
+      })
 
-    return {
-      instanceId,
-      status: 'connecting',
-      hasAuthState: await this.authStateStore.has(instanceId),
-      logoutCount: 0,
+      const active: ActiveBaileysTransport = {
+        socket,
+        callbacks: input.callbacks,
+        auth,
+        phase: 'active',
+        eventTail: Promise.resolve(),
+        transportClosed,
+        resolveTransportClosed,
+      }
+      socket.ev.on('creds.update', (update) => {
+        this.enqueueCurrentTransportEvent(instanceId, active, () => auth.mergeCreds(update))
+      })
+      socket.ev.on('connection.update', (update) => {
+        this.enqueueConnectionUpdate(instanceId, active, update)
+      })
+      this.activeTransports.set(instanceId, active)
+
+      return {
+        instanceId,
+        status: 'connecting',
+        hasAuthState,
+        logoutCount: 0,
+      }
+    } finally {
+      this.openingTransports.delete(instanceId)
     }
   }
 
-  private handleAsyncEvent(
+  async closeTransport(instanceId: string): Promise<WaTransportSession> {
+    const normalizedInstanceId = normalizeInstanceId(instanceId)
+    const active = this.reserveTerminalTransport(normalizedInstanceId, 'closing')
+
+    await active.eventTail
+    active.auth.deactivate()
+    let persistenceError: unknown
+    let hasPersistenceError = false
+    try {
+      await active.auth.drain()
+    } catch (error: unknown) {
+      persistenceError = error
+      hasPersistenceError = true
+    }
+
+    let closeError: unknown
+    let hasCloseError = false
+    try {
+      await this.waitForTransportClose(normalizedInstanceId, active, () =>
+        active.socket.end(undefined),
+      )
+    } catch (error: unknown) {
+      closeError = error
+      hasCloseError = true
+    }
+
+    if (hasCloseError) {
+      active.phase = 'terminal_failed'
+    } else {
+      this.removeActiveTransport(normalizedInstanceId, active.socket)
+    }
+    this.terminalTransports.delete(normalizedInstanceId)
+
+    if (hasPersistenceError) {
+      await this.reportError(normalizedInstanceId, active.callbacks, persistenceError)
+    }
+    if (hasCloseError) {
+      await this.reportError(normalizedInstanceId, active.callbacks, closeError)
+      throw closeError
+    }
+    if (hasPersistenceError) throw persistenceError
+
+    return {
+      instanceId: normalizedInstanceId,
+      status: 'disconnected',
+      hasAuthState: await this.authStateStore.has(normalizedInstanceId),
+      logoutCount: 0,
+      lastDisconnectReason: 'connection_closed',
+    }
+  }
+
+  async logout(instanceId: string): Promise<WaTransportSession> {
+    const normalizedInstanceId = normalizeInstanceId(instanceId)
+    const active = this.reserveTerminalTransport(normalizedInstanceId, 'logging_out')
+
+    await active.eventTail
+    active.auth.deactivate()
+    let persistenceError: unknown
+    let hasPersistenceError = false
+    try {
+      await active.auth.drain()
+    } catch (error: unknown) {
+      persistenceError = error
+      hasPersistenceError = true
+    }
+
+    let logoutError: unknown
+    let hasLogoutError = false
+    try {
+      await active.socket.logout()
+    } catch (error: unknown) {
+      logoutError = error
+      hasLogoutError = true
+    }
+
+    let closeError: unknown
+    let hasCloseError = false
+    try {
+      await this.waitForTransportClose(
+        normalizedInstanceId,
+        active,
+        hasLogoutError
+          ? () => active.socket.end(logoutError instanceof Error ? logoutError : undefined)
+          : undefined,
+      )
+    } catch (error: unknown) {
+      closeError = error
+      hasCloseError = true
+    }
+
+    let clearError: unknown
+    let hasClearError = false
+    try {
+      await this.authStateStore.clear(normalizedInstanceId)
+      this.pendingAuthClears.delete(normalizedInstanceId)
+    } catch (error: unknown) {
+      clearError = error
+      hasClearError = true
+      this.pendingAuthClears.add(normalizedInstanceId)
+    }
+
+    if (hasCloseError) {
+      active.phase = 'terminal_failed'
+    } else {
+      this.removeActiveTransport(normalizedInstanceId, active.socket)
+    }
+    this.terminalTransports.delete(normalizedInstanceId)
+
+    if (hasPersistenceError) {
+      await this.reportError(normalizedInstanceId, active.callbacks, persistenceError)
+    }
+    if (hasClearError) {
+      await this.reportError(normalizedInstanceId, active.callbacks, clearError)
+    }
+    if (hasLogoutError) {
+      await this.reportError(normalizedInstanceId, active.callbacks, logoutError)
+    }
+    if (hasCloseError) {
+      await this.reportError(normalizedInstanceId, active.callbacks, closeError)
+      throw closeError
+    }
+    if (hasLogoutError) throw logoutError
+    if (hasClearError) throw clearError
+
+    return {
+      instanceId: normalizedInstanceId,
+      status: 'logged_out',
+      hasAuthState: false,
+      logoutCount: 1,
+      lastDisconnectReason: 'logged_out',
+    }
+  }
+
+  private enqueueCurrentTransportEvent(
     instanceId: string,
-    callbacks: BaileysTransportConnectInput['callbacks'],
+    active: ActiveBaileysTransport,
     handler: () => Promise<void>,
   ): void {
-    void (async () => {
-      try {
-        await handler()
-      } catch (error: unknown) {
-        try {
-          if (callbacks?.onError) {
-            await callbacks.onError({ instanceId, error })
-            return
-          }
+    if (!this.isCurrentTransport(instanceId, active) || active.phase !== 'active') return
 
-          console.error(`[wa:${instanceId}] unhandled transport error`, error)
-        } catch {
-          // Error reporting must not create an unhandled rejection.
-        }
+    this.enqueueTransportEvent(instanceId, active, handler)
+  }
+
+  private enqueueConnectionUpdate(
+    instanceId: string,
+    active: ActiveBaileysTransport,
+    update: BaileysEventMap['connection.update'],
+  ): void {
+    if (!this.isCurrentTransport(instanceId, active)) return
+
+    if (update.connection === 'close') {
+      active.resolveTransportClosed()
+    }
+    if (active.phase !== 'active') return
+
+    if (update.connection === 'close') {
+      active.phase = 'remote_closing'
+      this.terminalTransports.add(instanceId)
+    }
+
+    this.enqueueTransportEvent(instanceId, active, () =>
+      this.handleConnectionUpdate(instanceId, active, update),
+    )
+  }
+
+  private enqueueTransportEvent(
+    instanceId: string,
+    active: ActiveBaileysTransport,
+    handler: () => Promise<void>,
+  ): void {
+    active.eventTail = active.eventTail
+      .then(handler)
+      .catch((error: unknown) => this.reportError(instanceId, active.callbacks, error))
+  }
+
+  private async reportError(
+    instanceId: string,
+    callbacks: BaileysTransportConnectInput['callbacks'],
+    error: unknown,
+  ): Promise<void> {
+    try {
+      if (callbacks?.onError) {
+        await callbacks.onError({ instanceId, error })
+        return
       }
+
+      console.error(`[wa:${instanceId}] unhandled transport error`, error)
+    } catch {
+      // Error reporting must not create an unhandled rejection.
+    }
+  }
+
+  private async waitForTransportClose(
+    instanceId: string,
+    active: ActiveBaileysTransport,
+    close?: () => Promise<void>,
+  ): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const closeOperation = (async () => {
+      await close?.()
+      await active.transportClosed
     })()
+    const timeoutOperation = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(new WaTransportCloseTimeoutError(instanceId, this.transportCloseTimeoutMs))
+      }, this.transportCloseTimeoutMs)
+    })
+
+    try {
+      await Promise.race([closeOperation, timeoutOperation])
+    } finally {
+      if (timeout) clearTimeout(timeout)
+    }
+  }
+
+  private requireActiveTransport(instanceId: string): ActiveBaileysTransport {
+    const active = this.activeTransports.get(instanceId)
+    if (!active) throw new WaTransportNotConnectedError(instanceId)
+
+    return active
+  }
+
+  private reserveTerminalTransport(
+    instanceId: string,
+    phase: 'closing' | 'logging_out',
+  ): ActiveBaileysTransport {
+    if (this.openingTransports.has(instanceId) || this.terminalTransports.has(instanceId)) {
+      throw new WaTransportOperationInProgressError(instanceId)
+    }
+
+    const active = this.requireActiveTransport(instanceId)
+    if (active.phase !== 'active' && active.phase !== 'terminal_failed') {
+      throw new WaTransportOperationInProgressError(instanceId)
+    }
+
+    active.phase = phase
+    this.terminalTransports.add(instanceId)
+    return active
+  }
+
+  private isCurrentTransport(instanceId: string, active: ActiveBaileysTransport): boolean {
+    return this.activeTransports.get(instanceId) === active
+  }
+
+  private removeActiveTransport(instanceId: string, socket: WASocket): void {
+    if (this.activeTransports.get(instanceId)?.socket === socket) {
+      this.activeTransports.delete(instanceId)
+    }
   }
 
   private async handleConnectionUpdate(
     instanceId: string,
+    active: ActiveBaileysTransport,
     update: BaileysEventMap['connection.update'],
-    callbacks: BaileysTransportConnectInput['callbacks'],
   ): Promise<void> {
     if (update.qr) {
-      await callbacks?.onQr?.({
+      await active.callbacks?.onQr?.({
         instanceId,
         qrCode: update.qr,
         expiresAt: new Date(this.now().getTime() + this.qrTtlMs),
@@ -103,7 +395,7 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     }
 
     if (update.connection === 'open') {
-      await callbacks?.onConnected?.({
+      await active.callbacks?.onConnected?.({
         instanceId,
         state: {
           instanceId,
@@ -120,12 +412,54 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     const reason = disconnectReasonFromStatusCode(
       getDisconnectStatusCode(update.lastDisconnect?.error),
     )
+    let clearError: unknown
+    let hasClearError = false
+    let persistenceError: unknown
+    let hasPersistenceError = false
+    try {
+      active.auth.deactivate()
+      try {
+        await active.auth.drain()
+      } catch (error: unknown) {
+        persistenceError = error
+        hasPersistenceError = true
+      }
+      if (reason === 'logged_out') {
+        try {
+          await this.authStateStore.clear(instanceId)
+          this.pendingAuthClears.delete(instanceId)
+        } catch (error: unknown) {
+          clearError = error
+          hasClearError = true
+          this.pendingAuthClears.add(instanceId)
+        }
+      }
+    } finally {
+      this.removeActiveTransport(instanceId, active.socket)
+      this.terminalTransports.delete(instanceId)
+    }
+
     if (reason === 'logged_out') {
-      await callbacks?.onLoggedOut?.({ instanceId })
+      try {
+        await active.callbacks?.onLoggedOut?.({ instanceId })
+      } finally {
+        if (hasPersistenceError) {
+          await this.reportError(instanceId, active.callbacks, persistenceError)
+        }
+        if (hasClearError) {
+          await this.reportError(instanceId, active.callbacks, clearError)
+        }
+      }
       return
     }
 
-    await callbacks?.onDisconnected?.({ instanceId, reason })
+    try {
+      await active.callbacks?.onDisconnected?.({ instanceId, reason })
+    } finally {
+      if (hasPersistenceError) {
+        await this.reportError(instanceId, active.callbacks, persistenceError)
+      }
+    }
   }
 }
 
@@ -133,12 +467,28 @@ function createStoreBackedAuthState(
   instanceId: string,
   state: BaileysAuthState,
   store: WaAuthStateStore,
-): AuthenticationState & {
-  mergeCreds(update: Partial<AuthenticationState['creds']>): Promise<void>
-} {
+): StoreBackedAuthenticationState {
   const liveCreds = decodeJsonObject(state.creds) as unknown as AuthenticationState['creds']
+  let acceptsWrites = true
+  let persistenceTail = Promise.resolve()
+  let persistenceError: unknown
+  let hasPersistenceError = false
   const persist = async (): Promise<void> => {
-    await writeBaileysAuthState(instanceId, state, store)
+    if (!acceptsWrites) return
+
+    const operation = persistenceTail.then(async () => {
+      try {
+        await writeBaileysAuthState(instanceId, state, store)
+        persistenceError = undefined
+        hasPersistenceError = false
+      } catch (error: unknown) {
+        persistenceError = error
+        hasPersistenceError = true
+        throw error
+      }
+    })
+    persistenceTail = operation.catch(() => undefined)
+    await operation
   }
 
   return {
@@ -187,6 +537,13 @@ function createStoreBackedAuthState(
       }
       await persist()
     },
+    deactivate: () => {
+      acceptsWrites = false
+    },
+    drain: async () => {
+      await persistenceTail
+      if (hasPersistenceError) throw persistenceError
+    },
   }
 }
 
@@ -205,6 +562,14 @@ function normalizeQrTtlMs(qrTtlMs: number): number {
   }
 
   return qrTtlMs
+}
+
+function normalizeTransportCloseTimeoutMs(timeoutMs: number): number {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError('transportCloseTimeoutMs must be a positive safe integer')
+  }
+
+  return timeoutMs
 }
 
 function disconnectReasonFromStatusCode(statusCode: number | undefined): WaDisconnectReason {
