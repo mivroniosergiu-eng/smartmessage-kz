@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InMemoryWaAuthStateStore } from './auth-state'
 import { BaileysAuthStateMapperError } from './baileys-auth-state-mapper'
 import { BaileysSocketTransportConnector } from './baileys-connector'
+import type { SessionState } from './session'
 import {
   WaTransportAlreadyConnectedError,
   WaTransportNotConnectedError,
+  WaTransportOperationInProgressError,
   type WaTransportCallbacks,
 } from './transport'
 
@@ -100,6 +102,33 @@ describe('BaileysSocketTransportConnector', () => {
     expect(baileysMock.makeWASocket).toHaveBeenCalledOnce()
   })
 
+  it('rejects terminal operations while the socket is still opening', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    const readGate = createDeferred<void>()
+    const readStarted = createDeferred<void>()
+    const originalRead = store.read.bind(store)
+    vi.spyOn(store, 'read').mockImplementation(async (instanceId) => {
+      readStarted.resolve(undefined)
+      await readGate.promise
+      return originalRead(instanceId)
+    })
+    const connector = new BaileysSocketTransportConnector(store)
+
+    const connect = connector.connect({ instanceId: 'instance-opening-terminal' })
+    await readStarted.promise
+
+    await expect(connector.closeTransport('instance-opening-terminal')).rejects.toBeInstanceOf(
+      WaTransportOperationInProgressError,
+    )
+    await expect(connector.logout('instance-opening-terminal')).rejects.toBeInstanceOf(
+      WaTransportOperationInProgressError,
+    )
+    readGate.resolve(undefined)
+    await expect(connect).resolves.toMatchObject({ status: 'connecting' })
+  })
+
   it('ends the active socket, preserves auth-state, and removes it from the registry on close', async () => {
     const firstSocket = createFakeBaileysSocket()
     const secondSocket = createFakeBaileysSocket()
@@ -126,6 +155,35 @@ describe('BaileysSocketTransportConnector', () => {
     expect(baileysMock.makeWASocket).toHaveBeenCalledTimes(2)
   })
 
+  it('persists an already queued creds update before runtime close completes', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    const qrGate = createDeferred<void>()
+    const qrStarted = createDeferred<void>()
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({
+      instanceId: 'instance-queued-close',
+      callbacks: {
+        onQr: async () => {
+          qrStarted.resolve(undefined)
+          await qrGate.promise
+        },
+      },
+    })
+    await socket.emit('connection.update', { qr: 'queued-close-qr' })
+    await qrStarted.promise
+    await socket.emit('creds.update', { registered: true })
+    const close = connector.closeTransport('instance-queued-close')
+    qrGate.resolve(undefined)
+    await close
+
+    await expect(store.read('instance-queued-close')).resolves.toMatchObject({
+      creds: { registered: true },
+    })
+  })
+
   it('logs out the active socket, clears auth-state, and removes it from the registry', async () => {
     const firstSocket = createFakeBaileysSocket()
     const secondSocket = createFakeBaileysSocket()
@@ -150,6 +208,31 @@ describe('BaileysSocketTransportConnector', () => {
       status: 'connecting',
       hasAuthState: false,
     })
+    expect(baileysMock.makeWASocket).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries failed explicit logout cleanup before opening a replacement socket', async () => {
+    const firstSocket = createFakeBaileysSocket()
+    const replacementSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(firstSocket).mockReturnValueOnce(replacementSocket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-explicit-clear-retry', {
+      creds: { registered: true },
+      keys: {},
+    })
+    const clearError = new Error('explicit auth clear failed')
+    vi.spyOn(store, 'clear').mockRejectedValueOnce(clearError)
+    const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-explicit-clear-retry', callbacks })
+    await expect(connector.logout('instance-explicit-clear-retry')).rejects.toBe(clearError)
+    await expect(store.has('instance-explicit-clear-retry')).resolves.toBe(true)
+
+    await expect(
+      connector.connect({ instanceId: 'instance-explicit-clear-retry' }),
+    ).resolves.toMatchObject({ hasAuthState: false })
+    await expect(store.has('instance-explicit-clear-retry')).resolves.toBe(false)
     expect(baileysMock.makeWASocket).toHaveBeenCalledTimes(2)
   })
 
@@ -205,12 +288,115 @@ describe('BaileysSocketTransportConnector', () => {
         error: closeError,
       })
       expect(onUnhandledRejection).not.toHaveBeenCalled()
+      await expect(connector.connect({ instanceId: 'instance-close-error' })).rejects.toBeInstanceOf(
+        WaTransportAlreadyConnectedError,
+      )
+      await expect(connector.closeTransport('instance-close-error')).resolves.toMatchObject({
+        status: 'disconnected',
+      })
       await expect(connector.closeTransport('instance-close-error')).rejects.toBeInstanceOf(
         WaTransportNotConnectedError,
       )
     } finally {
       process.off('unhandledRejection', onUnhandledRejection)
     }
+  })
+
+  it('rejects runtime close when the latest auth-state write failed', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const writeError = new Error('auth write failed')
+    const store = new InMemoryWaAuthStateStore()
+    vi.spyOn(store, 'write').mockRejectedValueOnce(writeError)
+    const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-write-error', callbacks })
+    await socket.emit('creds.update', { registered: true })
+    await flushAsyncEvents()
+
+    await expect(connector.closeTransport('instance-write-error')).rejects.toBe(writeError)
+    expect(socket.end).toHaveBeenCalledOnce()
+    expect(socket.end).toHaveBeenCalledWith(undefined)
+    expect(callbacks.onError).toHaveBeenCalledWith({
+      instanceId: 'instance-write-error',
+      error: writeError,
+    })
+  })
+
+  it('rejects a competing terminal operation while close is in progress', async () => {
+    const socket = createFakeBaileysSocket()
+    const closeGate = createDeferred<void>()
+    socket.end.mockReturnValueOnce(closeGate.promise)
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-terminal-race', { creds: { registered: true }, keys: {} })
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-terminal-race' })
+    const close = connector.closeTransport('instance-terminal-race')
+
+    await expect(connector.logout('instance-terminal-race')).rejects.toBeInstanceOf(
+      WaTransportOperationInProgressError,
+    )
+    expect(socket.logout).not.toHaveBeenCalled()
+
+    closeGate.resolve(undefined)
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+    await expect(close).resolves.toMatchObject({
+      status: 'disconnected',
+      hasAuthState: true,
+    })
+  })
+
+  it('keeps ownership until the close event when socket.end returns before transport cleanup', async () => {
+    const socket = createFakeBaileysSocket()
+    socket.end.mockResolvedValueOnce(undefined)
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await connector.connect({ instanceId: 'instance-deferred-close-event' })
+    const close = connector.closeTransport('instance-deferred-close-event')
+    await flushAsyncEvents()
+
+    await expect(
+      connector.connect({ instanceId: 'instance-deferred-close-event' }),
+    ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+    await expect(close).resolves.toMatchObject({ status: 'disconnected' })
+  })
+
+  it('keeps ownership until the close event after logout falls back to socket.end', async () => {
+    const socket = createFakeBaileysSocket()
+    const logoutError = new Error('logout failed')
+    socket.logout.mockRejectedValueOnce(logoutError)
+    socket.end.mockResolvedValueOnce(undefined)
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await connector.connect({
+      instanceId: 'instance-deferred-logout-close-event',
+      callbacks: { onError: vi.fn() },
+    })
+    const logout = connector.logout('instance-deferred-logout-close-event')
+    await flushAsyncEvents()
+
+    await expect(
+      connector.connect({ instanceId: 'instance-deferred-logout-close-event' }),
+    ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+    await expect(logout).rejects.toBe(logoutError)
   })
 
   it('emits QR events with instance id, QR payload, and deterministic expiry', async () => {
@@ -275,8 +461,11 @@ describe('BaileysSocketTransportConnector', () => {
   })
 
   it('maps connected, disconnected, and logged_out updates to transport callbacks', async () => {
-    const socket = createFakeBaileysSocket()
-    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const disconnectedSocket = createFakeBaileysSocket()
+    const loggedOutSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket
+      .mockReturnValueOnce(disconnectedSocket)
+      .mockReturnValueOnce(loggedOutSocket)
     const callbacks: WaTransportCallbacks = {
       onConnected: vi.fn(),
       onDisconnected: vi.fn(),
@@ -285,15 +474,18 @@ describe('BaileysSocketTransportConnector', () => {
     const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
 
     await connector.connect({ instanceId: 'instance-events', callbacks })
-    await socket.emit('connection.update', { connection: 'open' })
-    await socket.emit('connection.update', {
+    await disconnectedSocket.emit('connection.update', { connection: 'open' })
+    await disconnectedSocket.emit('connection.update', {
       connection: 'close',
       lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
     })
-    await socket.emit('connection.update', {
+    await flushAsyncEvents()
+    await connector.connect({ instanceId: 'instance-events', callbacks })
+    await loggedOutSocket.emit('connection.update', {
       connection: 'close',
       lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
     })
+    await flushAsyncEvents()
 
     expect(callbacks.onConnected).toHaveBeenCalledWith({
       instanceId: 'instance-events',
@@ -311,29 +503,442 @@ describe('BaileysSocketTransportConnector', () => {
     expect(callbacks.onLoggedOut).toHaveBeenCalledWith({ instanceId: 'instance-events' })
   })
 
-  it('maps unclassified Baileys session failures to transient disconnects', async () => {
+  it('clears persisted auth-state before reporting a confirmed logged_out update', async () => {
     const socket = createFakeBaileysSocket()
     baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-confirmed-logout', {
+      creds: { registered: true },
+      keys: {},
+    })
+    const onLoggedOut = vi.fn(async () => {
+      await expect(store.has('instance-confirmed-logout')).resolves.toBe(false)
+    })
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({
+      instanceId: 'instance-confirmed-logout',
+      callbacks: { onLoggedOut },
+    })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
+    })
+    await flushAsyncEvents()
+
+    await expect(store.has('instance-confirmed-logout')).resolves.toBe(false)
+    expect(onLoggedOut).toHaveBeenCalledOnce()
+  })
+
+  it('blocks reconnect until confirmed logged_out cleanup finishes', async () => {
+    const firstSocket = createFakeBaileysSocket()
+    const secondSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-remote-cleanup', {
+      creds: { registered: true },
+      keys: {},
+    })
+    const clearGate = createDeferred<void>()
+    const originalClear = store.clear.bind(store)
+    vi.spyOn(store, 'clear').mockImplementation(async (instanceId) => {
+      await clearGate.promise
+      await originalClear(instanceId)
+    })
+    const loggedOut = createDeferred<void>()
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({
+      instanceId: 'instance-remote-cleanup',
+      callbacks: { onLoggedOut: () => loggedOut.resolve(undefined) },
+    })
+    await firstSocket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
+    })
+    await Promise.resolve()
+
+    await expect(
+      connector.connect({ instanceId: 'instance-remote-cleanup' }),
+    ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+    clearGate.resolve(undefined)
+    await loggedOut.promise
+    await flushAsyncEvents()
+    await expect(connector.connect({ instanceId: 'instance-remote-cleanup' })).resolves.toMatchObject({
+      hasAuthState: false,
+    })
+  })
+
+  it('ignores a delayed logged_out update from a replaced socket', async () => {
+    const staleSocket = createFakeBaileysSocket()
+    const activeSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(staleSocket).mockReturnValueOnce(activeSocket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-stale-close', { creds: { registered: true }, keys: {} })
+    const callbacks: WaTransportCallbacks = { onLoggedOut: vi.fn() }
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-stale-close', callbacks })
+    await staleSocket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+    await flushAsyncEvents()
+    await connector.connect({ instanceId: 'instance-stale-close', callbacks })
+
+    await staleSocket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
+    })
+    await flushAsyncEvents()
+
+    await expect(store.has('instance-stale-close')).resolves.toBe(true)
+    expect(callbacks.onLoggedOut).not.toHaveBeenCalled()
+    await expect(
+      connector.connect({ instanceId: 'instance-stale-close' }),
+    ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+  })
+
+  it('drains an in-flight auth write before logout clears persisted state', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    const writeGate = createDeferred<void>()
+    const originalWrite = store.write.bind(store)
+    const writeStarted = createDeferred<void>()
+    vi.spyOn(store, 'write').mockImplementation(async (instanceId, state) => {
+      writeStarted.resolve(undefined)
+      await writeGate.promise
+      await originalWrite(instanceId, state)
+    })
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-write-drain' })
+    await socket.emit('creds.update', { registered: true })
+    await writeStarted.promise
+    const logout = connector.logout('instance-write-drain')
+    await Promise.resolve()
+
+    expect(socket.logout).not.toHaveBeenCalled()
+    writeGate.resolve(undefined)
+    await expect(logout).resolves.toMatchObject({ status: 'logged_out', hasAuthState: false })
+    await expect(store.has('instance-write-drain')).resolves.toBe(false)
+  })
+
+  it('drains a direct Baileys key write before logout clears persisted state', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    const writeGate = createDeferred<void>()
+    const originalWrite = store.write.bind(store)
+    const writeStarted = createDeferred<void>()
+    vi.spyOn(store, 'write').mockImplementation(async (instanceId, state) => {
+      writeStarted.resolve(undefined)
+      await writeGate.promise
+      await originalWrite(instanceId, state)
+    })
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-key-write-drain' })
+    const auth = baileysMock.makeWASocket.mock.calls[0]?.[0].auth
+    const keyWrite = auth.keys.set({ session: { contact: new Uint8Array([4, 5, 6]) } })
+    await writeStarted.promise
+    const logout = connector.logout('instance-key-write-drain')
+    await Promise.resolve()
+
+    expect(socket.logout).not.toHaveBeenCalled()
+    writeGate.resolve(undefined)
+    await keyWrite
+    await logout
+    await expect(store.has('instance-key-write-drain')).resolves.toBe(false)
+  })
+
+  it('reports auth cleanup failure without hiding confirmed logged_out', async () => {
+    const socket = createFakeBaileysSocket()
+    const replacementSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket).mockReturnValueOnce(replacementSocket)
+    const clearError = new Error('auth clear failed')
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-clear-error', { creds: { registered: true }, keys: {} })
+    vi.spyOn(store, 'clear').mockRejectedValueOnce(clearError)
+    const callbacks: WaTransportCallbacks = {
+      onLoggedOut: vi.fn(),
+      onError: vi.fn(),
+    }
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-clear-error', callbacks })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
+    })
+    await flushAsyncEvents()
+
+    expect(callbacks.onLoggedOut).toHaveBeenCalledWith({ instanceId: 'instance-clear-error' })
+    expect(callbacks.onError).toHaveBeenCalledWith({
+      instanceId: 'instance-clear-error',
+      error: clearError,
+    })
+    await expect(store.has('instance-clear-error')).resolves.toBe(true)
+    await expect(connector.connect({ instanceId: 'instance-clear-error' })).resolves.toMatchObject({
+      hasAuthState: false,
+    })
+    await expect(store.has('instance-clear-error')).resolves.toBe(false)
+  })
+
+  it('does not duplicate remote logged_out side effects during explicit logout', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-explicit-logout-event', {
+      creds: { registered: true },
+      keys: {},
+    })
+    const clear = vi.spyOn(store, 'clear')
+    const callbacks: WaTransportCallbacks = { onLoggedOut: vi.fn() }
+    socket.logout.mockImplementationOnce(async () => {
+      await socket.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
+      })
+    })
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-explicit-logout-event', callbacks })
+    await connector.logout('instance-explicit-logout-event')
+    await flushAsyncEvents()
+
+    expect(clear).toHaveBeenCalledOnce()
+    expect(callbacks.onLoggedOut).not.toHaveBeenCalled()
+  })
+
+  it('holds socket ownership until successful logout emits its close event', async () => {
+    const firstSocket = createFakeBaileysSocket()
+    const replacementSocket = createFakeBaileysSocket()
+    firstSocket.logout.mockResolvedValueOnce(undefined)
+    baileysMock.makeWASocket.mockReturnValueOnce(firstSocket).mockReturnValueOnce(replacementSocket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-logout-close-barrier', {
+      creds: { registered: true },
+      keys: {},
+    })
+    const clear = vi.spyOn(store, 'clear')
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-logout-close-barrier' })
+    const logout = connector.logout('instance-logout-close-barrier')
+    await Promise.resolve()
+
+    expect(clear).not.toHaveBeenCalled()
+    await expect(
+      connector.connect({ instanceId: 'instance-logout-close-barrier' }),
+    ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+    await firstSocket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
+    })
+    await expect(logout).resolves.toMatchObject({ status: 'logged_out' })
+    await expect(
+      connector.connect({ instanceId: 'instance-logout-close-barrier' }),
+    ).resolves.toMatchObject({ hasAuthState: false })
+  })
+
+  it('awaits fallback transport close when Baileys logout fails', async () => {
+    const firstSocket = createFakeBaileysSocket()
+    const replacementSocket = createFakeBaileysSocket()
+    const logoutError = new Error('logout request failed')
+    const closeGate = createDeferred<void>()
+    const closeStarted = createDeferred<void>()
+    firstSocket.logout.mockRejectedValueOnce(logoutError)
+    firstSocket.end.mockImplementationOnce(async () => {
+      closeStarted.resolve(undefined)
+      await closeGate.promise
+    })
+    baileysMock.makeWASocket.mockReturnValueOnce(firstSocket).mockReturnValueOnce(replacementSocket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-logout-fallback', {
+      creds: { registered: true },
+      keys: {},
+    })
+    const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-logout-fallback', callbacks })
+    const logout = connector.logout('instance-logout-fallback')
+    await closeStarted.promise
+
+    expect(firstSocket.end).toHaveBeenCalledWith(logoutError)
+    await expect(
+      connector.connect({ instanceId: 'instance-logout-fallback' }),
+    ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+    closeGate.resolve(undefined)
+    await firstSocket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+    await expect(logout).rejects.toBe(logoutError)
+    expect(callbacks.onError).toHaveBeenCalledWith({
+      instanceId: 'instance-logout-fallback',
+      error: logoutError,
+    })
+    await expect(
+      connector.connect({ instanceId: 'instance-logout-fallback' }),
+    ).resolves.toMatchObject({ hasAuthState: false })
+  })
+
+  it('still clears auth-state and reports logged_out after a failed pending auth write', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const writeError = new Error('pending auth write failed')
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-write-error-logout', {
+      creds: { registered: true },
+      keys: {},
+    })
+    vi.spyOn(store, 'write').mockRejectedValueOnce(writeError)
+    const callbacks: WaTransportCallbacks = {
+      onLoggedOut: vi.fn(),
+      onError: vi.fn(),
+    }
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-write-error-logout', callbacks })
+    await socket.emit('creds.update', { registered: false })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
+    })
+    await flushAsyncEvents()
+
+    expect(callbacks.onLoggedOut).toHaveBeenCalledWith({
+      instanceId: 'instance-write-error-logout',
+    })
+    await expect(store.has('instance-write-error-logout')).resolves.toBe(false)
+    expect(callbacks.onError).toHaveBeenCalledWith({
+      instanceId: 'instance-write-error-logout',
+      error: writeError,
+    })
+  })
+
+  it('persists a queued creds update before a transient remote close completes', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    const disconnected = createDeferred<void>()
+    const qrGate = createDeferred<void>()
+    const qrStarted = createDeferred<void>()
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({
+      instanceId: 'instance-queued-remote-close',
+      callbacks: {
+        onQr: async () => {
+          qrStarted.resolve(undefined)
+          await qrGate.promise
+        },
+        onDisconnected: () => disconnected.resolve(undefined),
+      },
+    })
+    await socket.emit('connection.update', { qr: 'queued-remote-close-qr' })
+    await qrStarted.promise
+    await socket.emit('creds.update', { registered: true })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+    qrGate.resolve(undefined)
+    await disconnected.promise
+
+    await expect(store.read('instance-queued-remote-close')).resolves.toMatchObject({
+      creds: { registered: true },
+    })
+  })
+
+  it('reports auth persistence failure without hiding transient disconnect', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const writeError = new Error('transient auth write failed')
+    const store = new InMemoryWaAuthStateStore()
+    vi.spyOn(store, 'write').mockRejectedValueOnce(writeError)
+    const callbacks: WaTransportCallbacks = {
+      onDisconnected: vi.fn(),
+      onError: vi.fn(),
+    }
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-transient-write-error', callbacks })
+    await socket.emit('creds.update', { registered: true })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+    await flushAsyncEvents()
+
+    expect(callbacks.onDisconnected).toHaveBeenCalledWith({
+      instanceId: 'instance-transient-write-error',
+      reason: 'connection_closed',
+    })
+    expect(callbacks.onError).toHaveBeenCalledWith({
+      instanceId: 'instance-transient-write-error',
+      error: writeError,
+    })
+  })
+
+  it('releases remote close ownership before invoking reconnect callback', async () => {
+    const firstSocket = createFakeBaileysSocket()
+    const secondSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket)
+    const reconnected = createDeferred<SessionState>()
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await connector.connect({
+      instanceId: 'instance-callback-reconnect',
+      callbacks: {
+        onDisconnected: async () => {
+          reconnected.resolve(
+            await connector.connect({ instanceId: 'instance-callback-reconnect' }),
+          )
+        },
+      },
+    })
+    await firstSocket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+
+    await expect(reconnected.promise).resolves.toMatchObject({ status: 'connecting' })
+    expect(baileysMock.makeWASocket).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps unclassified Baileys session failures to transient disconnects', async () => {
+    const badSessionSocket = createFakeBaileysSocket()
+    const replacedSocket = createFakeBaileysSocket()
+    baileysMock.makeWASocket
+      .mockReturnValueOnce(badSessionSocket)
+      .mockReturnValueOnce(replacedSocket)
     const callbacks: WaTransportCallbacks = {
       onDisconnected: vi.fn(),
     }
     const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
 
     await connector.connect({ instanceId: 'instance-session-failures', callbacks })
-    await socket.emit('connection.update', {
+    await badSessionSocket.emit('connection.update', {
       connection: 'close',
       lastDisconnect: {
         error: createBaileysCloseError(baileysMock.DisconnectReason.badSession),
         date: new Date(),
       },
     })
-    await socket.emit('connection.update', {
+    await flushAsyncEvents()
+    await connector.connect({ instanceId: 'instance-session-failures', callbacks })
+    await replacedSocket.emit('connection.update', {
       connection: 'close',
       lastDisconnect: {
         error: createBaileysCloseError(baileysMock.DisconnectReason.connectionReplaced),
         date: new Date(),
       },
     })
+    await flushAsyncEvents()
 
     expect(callbacks.onDisconnected).toHaveBeenNthCalledWith(1, {
       instanceId: 'instance-session-failures',
@@ -542,28 +1147,42 @@ describe('BaileysSocketTransportConnector', () => {
 type FakeBaileysEvent = 'connection.update' | 'creds.update'
 type FakeBaileysListener = (payload: never) => Promise<void> | void
 
-function createFakeBaileysSocket(): {
+interface FakeBaileysSocket {
   ev: { on: (event: FakeBaileysEvent, listener: FakeBaileysListener) => void }
   end: ReturnType<typeof vi.fn>
   logout: ReturnType<typeof vi.fn>
   emit: (event: FakeBaileysEvent, payload: unknown) => Promise<void>
-} {
-  const listeners = new Map<FakeBaileysEvent, FakeBaileysListener[]>()
+}
 
-  return {
+function createFakeBaileysSocket(): FakeBaileysSocket {
+  const listeners = new Map<FakeBaileysEvent, FakeBaileysListener[]>()
+  const socket: FakeBaileysSocket = {
     ev: {
       on: (event, listener) => {
         listeners.set(event, [...(listeners.get(event) ?? []), listener])
       },
     },
-    end: vi.fn(async () => undefined),
-    logout: vi.fn(async () => undefined),
+    end: vi.fn(async () => {
+      await socket.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+      })
+    }),
+    logout: vi.fn(),
     emit: async (event, payload) => {
       for (const listener of listeners.get(event) ?? []) {
         await listener(payload as never)
       }
     },
   }
+  socket.logout.mockImplementation(async () => {
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(401), date: new Date() },
+    })
+  })
+
+  return socket
 }
 
 function createBaileysCloseError(statusCode: number): Error & {
@@ -578,4 +1197,16 @@ function createBaileysCloseError(statusCode: number): Error & {
 
 async function flushAsyncEvents(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T | PromiseLike<T>) => void
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve
+  })
+
+  return { promise, resolve }
 }

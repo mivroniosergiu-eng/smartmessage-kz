@@ -6,6 +6,7 @@ export type WaTransportErrorCode =
   | 'transport_unavailable'
   | 'already_connected'
   | 'not_connected'
+  | 'operation_in_progress'
   | 'connect_failed'
   | 'disconnected'
   | 'logged_out'
@@ -91,5 +92,14 @@ export class WaTransportNotConnectedError extends Error {
   constructor(readonly instanceId: string) {
     super(`WA transport has no active socket for instance ${instanceId}`)
     this.name = 'WaTransportNotConnectedError'
+  }
+}
+
+export class WaTransportOperationInProgressError extends Error {
+  readonly code = 'operation_in_progress' satisfies WaTransportErrorCode
+
+  constructor(readonly instanceId: string) {
+    super(`WA transport already has a terminal operation in progress for instance ${instanceId}`)
+    this.name = 'WaTransportOperationInProgressError'
   }
 }

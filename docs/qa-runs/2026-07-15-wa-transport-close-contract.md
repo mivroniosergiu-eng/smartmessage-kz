@@ -1,45 +1,62 @@
 # QA-run: WA transport close/logout contract — 2026-07-15
 
 - Исполнитель (агент/человек): Codex task-agent
-- Коммит/ветка: `feat/phase-1-wa-transport-close-contract`
+- Ветка: `feat/phase-1-wa-transport-close-contract`
+- PR: [#23](https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/23)
 
 ## Автотесты
-- TDD red: `pnpm --filter @smartmessage/wa test -- baileys-transport-adapter.spec.ts baileys-connector.spec.ts` — expected failure, 9/23 tests failed до реализации close/logout contract.
-- TDD green: `pnpm --filter @smartmessage/wa test -- baileys-transport-adapter.spec.ts baileys-connector.spec.ts` — passed, 23/23.
-- Ownership-race TDD red: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — expected failure, 1/21; два конкурентных `connect()` проходили active-registry check до async auth-state read.
-- Ownership-race TDD green: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — passed, 21/21 после reservation нормализованного `instanceId` на время открытия.
-- Команда прогона: `pnpm --filter @smartmessage/wa test` — passed, 90/90.
-- Команда прогона: `pnpm --filter @smartmessage/wa lint` — passed.
-- Команда прогона: `pnpm --filter @smartmessage/worker test` — passed, 86/86.
-- Команда прогона: `pnpm --filter @smartmessage/worker lint` — passed.
-- Команда прогона: `pnpm typecheck` — passed для всех workspace-пакетов.
-- Команда прогона: `pnpm test` — passed, 242/242 workspace tests.
-- Команда прогона: `pnpm build` — passed.
-- Команда прогона: `git diff --check` — passed.
-- Anti-weakening scan: passed, no `.skip`, `.only`, `xit`, `xdescribe`, or `xtest` found.
-- Session-file safety scan: passed, no `useMultiFileAuthState`, `auth_info*`, `wa-sessions`, or `*.session` artifacts found.
-- Baileys/socket safety scan: passed; production `@whiskeysockets/baileys`/`makeWASocket` remains isolated to `packages/wa/src/baileys-connector.ts`, no production `sendMessage()` added.
-- Worker/web surface scan: passed; no diff under `apps/worker` or `apps/web`, worker default remains `MockSessionManager`.
-- Результат CI (ссылка на GitHub Actions run): not run locally.
-- Покрытие критичных зон (рассылки/биллинг/auth/интеграции/ИИ):
-  - Neutral transport boundary exposes SessionState-compatible `closeTransport(instanceId)` and `logout(instanceId)` results.
-  - Adapter delegates connect/close/logout and rejects all operations with `WaTransportUnavailableError` when no connector is configured.
-  - Fake Baileys socket verifies runtime close uses the installed Baileys `end(undefined)` contract and preserves auth-state.
-  - Fake Baileys socket verifies terminal logout uses `logout()`, clears `WaAuthStateStore`, and removes the socket from the registry.
-  - Normalized active/opening registries reject sequential and concurrent duplicate socket ownership.
-  - Close/logout before connect and repeated close/logout reject with deterministic `WaTransportNotConnectedError`.
-  - Close failure reaches `onError`, rejects with the original error, removes the failed socket, and does not create an unhandled rejection.
-  - `no-network.spec.ts` remains green; no real WhatsApp connection or send occurs in tests.
 
-## Ручной QA (из QA_CHECKPOINTS.md, раздел: WA transport/session safety)
-- [x] Installed Baileys `7.0.0-rc13` declarations verified locally: `end(error: Error | undefined): Promise<void>` and `logout(msg?: string): Promise<void>`.
-- [x] Runtime close and terminal logout are distinct; close never calls logout or clears auth-state.
-- [x] Worker default wiring remains `MockSessionManager`; no worker wiring was added.
-- [x] No HTTP/UI/QR endpoint, real socket/send call, or filesystem session path was added.
-- [x] Tests use only an in-memory fake Baileys socket and in-memory auth-state store.
+- TDD red: `pnpm --filter @smartmessage/wa test -- baileys-transport-adapter.spec.ts baileys-connector.spec.ts` — expected failure, 9/23 tests failed до реализации close/logout contract.
+- TDD green: та же команда — passed, 23/23.
+- Ownership-race TDD red: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — expected failure подтвердил, что два конкурентных `connect()` проходили active-registry check до async auth-state read.
+- Review-fix TDD red: последовательные целевые прогоны подтвердили дефекты в `logged_out` cleanup, concurrent close/logout, stale-socket identity, queued/in-flight auth writes, persistence-error visibility, fallback close и фактическом transport-close barrier.
+- Review-fix TDD green: `pnpm --filter @smartmessage/wa test -- baileys-connector.spec.ts` — passed, 41/41.
+- `pnpm --filter @smartmessage/wa test` — passed, 110/110.
+- `pnpm --filter @smartmessage/wa lint` — passed.
+- `pnpm --filter @smartmessage/worker test` — passed, 86/86.
+- `pnpm --filter @smartmessage/worker lint` — passed.
+- `pnpm typecheck` — passed для всех workspace-пакетов.
+- `pnpm test` — passed, 262/262 workspace tests.
+- `pnpm build` — passed.
+- `git diff --check` — passed после удаления generated-only whitespace churn из `packages/db/ERD.md`.
+- Anti-weakening scan — passed: в изменённой тестовой поверхности нет `.skip`, `.only`, `xit`, `xdescribe` или `xtest`.
+- Session-file safety scan — passed: нет `useMultiFileAuthState`, `auth_info*`, `wa-sessions`, `*.session` и session-артефактов.
+- Baileys/socket safety scan — passed: production `makeWASocket` изолирован в connector, `sendMessage()` не добавлен.
+- Worker/web surface scan — passed: diff не затрагивает `apps/worker` и `apps/web`; worker default остаётся `MockSessionManager`.
+- CI для локального незакоммиченного review-fix не запускался. Удалённый head PR до этих исправлений: `e3b253788e4a3c11eee039d2cdfb0b49ad641344`, старый `quality-gate` был green.
+
+## Покрытие критических контрактов
+
+- Neutral transport boundary возвращает SessionState-compatible результаты `closeTransport(instanceId)` и `logout(instanceId)`.
+- Adapter делегирует connect/close/logout и fail-closed отклоняет операции без connector.
+- Runtime close вызывает Baileys `end(undefined)`, сохраняет auth-state и не вызывает logout.
+- Terminal logout вызывает `logout()`, очищает `WaAuthStateStore` и не дублирует side effects от собственного `logged_out` event.
+- Active/opening registries блокируют последовательное и конкурентное двойное владение нормализованным `instanceId`.
+- Close/logout используют first-wins terminal reservation; конкурирующие terminal operations завершаются детерминированной ошибкой.
+- Ownership сохраняется до фактического `connection.update: close`, даже если `logout()` или `end()` вернули Promise раньше завершения transport cleanup.
+- Ошибка logout запускает fallback `end(error)`; ошибка фактического close сохраняет socket в retryable `terminal_failed` и блокирует новый connect.
+- Identity gate полностью игнорирует delayed events заменённого socket, включая stale `logged_out`.
+- Remote close блокирует reconnect до drain/cleanup; lifecycle callback может безопасно инициировать новый connect после освобождения registry.
+- Queued и in-flight `creds.update`/key writes дренируются до close/logout/remote-close; write-after-clear resurrection закрыт.
+- Ошибка auth persistence наблюдаема через `onError` и contract rejection, не маскируется успешным close.
+- Ошибка auth clear остаётся наблюдаемой, terminal lifecycle event не теряется, а следующий connect сначала повторяет pending clear.
+- Transient disconnect доставляется через `onDisconnected` даже при persistence error.
+- Missing/repeated close/logout отклоняются `WaTransportNotConnectedError`.
+- `no-network.spec.ts` остаётся green; тесты не создают реальное WhatsApp-соединение и ничего не отправляют.
+
+## Ручной QA
+
+- [x] Локально проверен установленный Baileys `7.0.0-rc13`: `logout()` запускает `end()` без await, а фактическое закрытие подтверждается `connection.update: close`.
+- [x] Runtime close и terminal logout разведены: close не очищает auth-state.
+- [x] Worker default wiring остаётся `MockSessionManager`; real Baileys wiring не добавлен.
+- [x] Нет HTTP/UI/QR/send surface, socket autostart или filesystem session path.
+- [x] Все тесты используют fake Baileys socket и in-memory auth-state store; реальные WA-аккаунты не использовались.
 
 ## Найденные дефекты / решения
-- Conservative missing-socket behavior is fail-closed: close/logout before connect and repeated calls raise `WaTransportNotConnectedError` instead of reporting a misleading successful state.
-- Self-review found a concurrent-connect gap before the active socket was registered. A normalized opening reservation now prevents two in-process sockets for one `instanceId`.
-- Socket registry deletion is identity-checked so a delayed close event from an old socket cannot remove a newer socket.
-- `pnpm build` regenerated whitespace in `packages/db/ERD.md`; generated churn was restored because the Prisma schema was not changed.
+
+- Нормализованная opening reservation закрыла concurrent-connect race до регистрации socket.
+- Identity/phase gates закрыли stale socket events и повторные close/logout side effects.
+- Serialized event/auth persistence barrier закрыла потерю queued update и credential resurrection после clear.
+- Persistence и auth-clear failures стали наблюдаемыми и получили fail-closed recovery/retry paths.
+- Actual-close barrier закрыла раннее освобождение ownership из-за асинхронного контракта Baileys `logout()`/`end()`.
+- `pnpm build` перегенерировал только whitespace в `packages/db/ERD.md`; файл отформатирован обратно, Prisma schema не менялась.
