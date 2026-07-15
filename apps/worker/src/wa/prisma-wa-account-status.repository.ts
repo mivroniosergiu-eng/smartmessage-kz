@@ -12,7 +12,6 @@ export interface PrismaWaAccountStatusRepositoryOptions {
   processId?: number
 }
 
-// WaAccount has numeric pid but no string workerId column yet; workerId stays in the port for later audit/context.
 export class PrismaWaAccountStatusRepository implements WaAccountStatusRepository {
   private readonly processId: number
 
@@ -23,48 +22,84 @@ export class PrismaWaAccountStatusRepository implements WaAccountStatusRepositor
     this.processId = options.processId ?? process.pid
   }
 
-  markConnecting(instanceId: string, _workerId: string): Promise<void> {
-    return this.updateStatus(instanceId, {
+  async getOwnershipEpoch(instanceId: string): Promise<bigint> {
+    const account = await this.db.waAccount.findUnique({
+      where: { instanceId },
+      select: { ownershipEpoch: true },
+    })
+    if (!account) throw new WaAccountStatusNotFoundError(instanceId)
+    return account.ownershipEpoch
+  }
+
+  async activateOwnership(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    const result = await this.db.waAccount.updateMany({
+      where: {
+        instanceId,
+        OR: [{ ownershipEpoch: { lt: epoch } }, { ownershipEpoch: epoch, ownerWorkerId: workerId }],
+      },
+      data: { ownershipEpoch: epoch, ownerWorkerId: workerId },
+    })
+    if (result.count > 0) return true
+    return this.resolveRejectedFence(instanceId)
+  }
+
+  markConnecting(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    return this.updateStatus(instanceId, workerId, epoch, {
       status: WaAccountStatus.CONNECTING,
       pid: this.processId,
       restrictedUntil: null,
     })
   }
 
-  markConnected(instanceId: string, _workerId: string): Promise<void> {
-    return this.updateStatus(instanceId, {
+  markConnected(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    return this.updateStatus(instanceId, workerId, epoch, {
       status: WaAccountStatus.CONNECTED,
       pid: this.processId,
       restrictedUntil: null,
     })
   }
 
-  markDisconnected(instanceId: string, _workerId: string, _reason?: string): Promise<void> {
-    return this.updateStatus(instanceId, {
+  markDisconnected(
+    instanceId: string,
+    workerId: string,
+    _reason: string | undefined,
+    epoch: bigint,
+  ): Promise<boolean> {
+    return this.updateStatus(instanceId, workerId, epoch, {
       status: WaAccountStatus.DISCONNECTED,
       pid: null,
       restrictedUntil: null,
     })
   }
 
-  markLoggedOut(instanceId: string, _workerId: string): Promise<void> {
-    return this.updateStatus(instanceId, {
+  markLoggedOut(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    return this.updateStatus(instanceId, workerId, epoch, {
       status: WaAccountStatus.LOGGED_OUT,
       pid: null,
       restrictedUntil: null,
     })
   }
 
-  markRestricted(instanceId: string, _workerId: string, restrictedUntil: Date): Promise<void> {
-    return this.updateStatus(instanceId, {
+  markRestricted(
+    instanceId: string,
+    workerId: string,
+    restrictedUntil: Date,
+    epoch: bigint,
+  ): Promise<boolean> {
+    return this.updateStatus(instanceId, workerId, epoch, {
       status: WaAccountStatus.RESTRICTED,
       pid: null,
       restrictedUntil,
     })
   }
 
-  markBanned(instanceId: string, _workerId: string, _reason?: string): Promise<void> {
-    return this.updateStatus(instanceId, {
+  markBanned(
+    instanceId: string,
+    workerId: string,
+    _reason: string | undefined,
+    epoch: bigint,
+  ): Promise<boolean> {
+    return this.updateStatus(instanceId, workerId, epoch, {
       status: WaAccountStatus.BANNED,
       pid: null,
       restrictedUntil: null,
@@ -73,19 +108,29 @@ export class PrismaWaAccountStatusRepository implements WaAccountStatusRepositor
 
   private async updateStatus(
     instanceId: string,
+    workerId: string,
+    epoch: bigint,
     data: {
       status: WaAccountStatus
       pid: number | null
       restrictedUntil: Date | null
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const result = await this.db.waAccount.updateMany({
-      where: { instanceId },
+      where: { instanceId, ownerWorkerId: workerId, ownershipEpoch: epoch },
       data,
     })
 
-    if (result.count === 0) {
-      throw new WaAccountStatusNotFoundError(instanceId)
-    }
+    if (result.count > 0) return true
+    return this.resolveRejectedFence(instanceId)
+  }
+
+  private async resolveRejectedFence(instanceId: string): Promise<false> {
+    const account = await this.db.waAccount.findUnique({
+      where: { instanceId },
+      select: { id: true },
+    })
+    if (!account) throw new WaAccountStatusNotFoundError(instanceId)
+    return false
   }
 }

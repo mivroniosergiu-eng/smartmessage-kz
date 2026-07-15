@@ -25,10 +25,23 @@ describe('InternalWorkerApiGuard', () => {
     )
   })
 
+  it.each(['   ', 'change_me_to_a_random_internal_token'])(
+    'fails closed for an empty or known placeholder token: %j',
+    (token) => {
+      process.env.WORKER_INTERNAL_API_TOKEN = token
+
+      expect(() => new InternalWorkerApiGuard().canActivate(createContext(token))).toThrow(
+        UnauthorizedException,
+      )
+    },
+  )
+
   it('rejects requests without the internal token header', () => {
     process.env.WORKER_INTERNAL_API_TOKEN = 'worker-token'
 
-    expect(() => new InternalWorkerApiGuard().canActivate(createContext(undefined))).toThrow(UnauthorizedException)
+    expect(() => new InternalWorkerApiGuard().canActivate(createContext(undefined))).toThrow(
+      UnauthorizedException,
+    )
   })
 
   it('rejects requests with the wrong internal token header', () => {

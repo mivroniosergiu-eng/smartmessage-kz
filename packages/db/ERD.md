@@ -161,6 +161,8 @@ SEND_ERROR SEND_ERROR
     WaLoginType loginType
     WaAccountStatus status
     Int pid "❓"
+    String ownerWorkerId "❓"
+    BigInt ownershipEpoch
     DateTime restrictedUntil "❓"
     DateTime createdAt
     DateTime updatedAt
@@ -170,6 +172,7 @@ SEND_ERROR SEND_ERROR
   "WaQrBootstrapEvent" {
     String id "🗝️"
     String qrCode
+    BigInt ownershipEpoch
     DateTime createdAt
     DateTime expiresAt
     }

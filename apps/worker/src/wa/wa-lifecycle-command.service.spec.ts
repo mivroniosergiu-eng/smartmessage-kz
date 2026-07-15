@@ -1,12 +1,12 @@
 import 'reflect-metadata'
 
 import { Test } from '@nestjs/testing'
-import { WaOwnershipError, type SessionState, type WaAccountStatusRepository, type OwnerRegistry } from '@smartmessage/wa'
+import { WaOwnershipError, type SessionState } from '@smartmessage/wa'
 import { describe, expect, it, vi } from 'vitest'
 
 import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
-import { WaModule } from './wa.module'
-import { WA_OWNER_REGISTRY, WA_REDIS_CONNECTION, WA_STATUS_REPOSITORY } from './wa.tokens'
+import { WA_LIFECYCLE_WORKER, WA_OWNER_LIFECYCLE_WORKER, WaModule } from './wa.module'
+import { WA_LIFECYCLE_QUEUE, WA_REDIS_CONNECTION, WA_SESSION_LIFECYCLE } from './wa.tokens'
 
 describe('WaLifecycleCommandService', () => {
   it('startInstance calls lifecycle.start and returns the session state', async () => {
@@ -22,7 +22,9 @@ describe('WaLifecycleCommandService', () => {
     const lifecycle = createLifecycleMock()
     const service = new WaLifecycleCommandService(lifecycle)
 
-    await expect(service.startInstance('   ')).rejects.toThrow('instanceId must be a non-empty string')
+    await expect(service.startInstance('   ')).rejects.toThrow(
+      'instanceId must be a non-empty string',
+    )
     expect(lifecycle.start).not.toHaveBeenCalled()
     expect(lifecycle.stop).not.toHaveBeenCalled()
     expect(lifecycle.renew).not.toHaveBeenCalled()
@@ -49,17 +51,22 @@ describe('WaLifecycleCommandService', () => {
     expect(lifecycle.renew).toHaveBeenCalledWith('instance-3')
   })
 
-  it('is available from the Nest WA module and starts through lifecycle wiring', async () => {
-    const ownerRegistry = new FakeOwnerRegistry()
-    const statusRepository = createStatusRepositoryMock()
+  it('is available from the Nest WA module without opening a real transport in tests', async () => {
+    const lifecycle = createLifecycleMock({
+      start: vi.fn(async (instanceId) => createSessionState(instanceId)),
+    })
 
     const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
       .overrideProvider(WA_REDIS_CONNECTION)
       .useValue(createFakeRedisConnection())
-      .overrideProvider(WA_OWNER_REGISTRY)
-      .useValue(ownerRegistry)
-      .overrideProvider(WA_STATUS_REPOSITORY)
-      .useValue(statusRepository)
+      .overrideProvider(WA_SESSION_LIFECYCLE)
+      .useValue(lifecycle)
+      .overrideProvider(WA_LIFECYCLE_QUEUE)
+      .useValue({ add: vi.fn(), close: vi.fn(async () => undefined) })
+      .overrideProvider(WA_LIFECYCLE_WORKER)
+      .useValue({ close: vi.fn(async () => undefined), run: vi.fn(async () => undefined) })
+      .overrideProvider(WA_OWNER_LIFECYCLE_WORKER)
+      .useValue({ close: vi.fn(async () => undefined), run: vi.fn(async () => undefined) })
       .compile()
 
     try {
@@ -69,8 +76,7 @@ describe('WaLifecycleCommandService', () => {
         status: 'connected',
         hasAuthState: true,
       })
-      expect(statusRepository.markConnecting).toHaveBeenCalledWith('instance-4', expect.stringMatching(/^worker-/))
-      expect(statusRepository.markConnected).toHaveBeenCalledWith('instance-4', expect.stringMatching(/^worker-/))
+      expect(lifecycle.start).toHaveBeenCalledWith('instance-4')
     } finally {
       await moduleRef.close()
     }
@@ -82,6 +88,7 @@ function createLifecycleMock(overrides: Partial<LifecycleMock> = {}): LifecycleM
     start: vi.fn(async () => createSessionState('default-instance')),
     stop: vi.fn(async () => false),
     renew: vi.fn(async () => false),
+    shutdownAll: vi.fn(async () => undefined),
     ...overrides,
   }
 }
@@ -95,20 +102,9 @@ function createSessionState(instanceId: string): SessionState {
   }
 }
 
-function createStatusRepositoryMock(): WaAccountStatusRepositoryMock {
-  return {
-    markConnecting: vi.fn(async () => undefined),
-    markConnected: vi.fn(async () => undefined),
-    markDisconnected: vi.fn(async () => undefined),
-    markLoggedOut: vi.fn(async () => undefined),
-    markRestricted: vi.fn(async () => undefined),
-    markBanned: vi.fn(async () => undefined),
-  }
-}
-
 function createFakeRedisConnection(): unknown {
   return {
-    eval: async () => [1, 'worker-test'],
+    eval: async () => 1,
     get: async () => null,
     quit: async () => 'OK',
   }
@@ -118,37 +114,5 @@ interface LifecycleMock {
   start: ReturnType<typeof vi.fn<(instanceId: string) => Promise<SessionState>>>
   stop: ReturnType<typeof vi.fn<(instanceId: string) => Promise<boolean>>>
   renew: ReturnType<typeof vi.fn<(instanceId: string) => Promise<boolean>>>
-}
-
-type WaAccountStatusRepositoryMock = {
-  [K in keyof WaAccountStatusRepository]: ReturnType<typeof vi.fn>
-}
-
-class FakeOwnerRegistry implements OwnerRegistry {
-  private readonly owners = new Map<string, string>()
-
-  async claim(instanceId: string, workerId: string): Promise<{ claimed: boolean; owner: string }> {
-    const owner = this.owners.get(instanceId)
-    if (owner && owner !== workerId) {
-      return { claimed: false, owner }
-    }
-
-    this.owners.set(instanceId, workerId)
-    return { claimed: true, owner: workerId }
-  }
-
-  async renew(instanceId: string, workerId: string): Promise<boolean> {
-    return this.owners.get(instanceId) === workerId
-  }
-
-  async release(instanceId: string, workerId: string): Promise<boolean> {
-    if (this.owners.get(instanceId) !== workerId) return false
-
-    this.owners.delete(instanceId)
-    return true
-  }
-
-  async getOwner(instanceId: string): Promise<string | null> {
-    return this.owners.get(instanceId) ?? null
-  }
+  shutdownAll: ReturnType<typeof vi.fn<() => Promise<void>>>
 }
