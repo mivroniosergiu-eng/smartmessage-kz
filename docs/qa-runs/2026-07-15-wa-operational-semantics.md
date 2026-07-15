@@ -1,8 +1,9 @@
 # QA-run: WA logout/restricted/banned operational semantics — 2026-07-15
 
 - Исполнитель: Codex task-agent + три review/implementation-субагента
-- Ветка: `feat/phase-1-wa-operational-semantics`
-- PR/CI: будет заполнено после открытия PR
+- Ветка/коммит: `feat/phase-1-wa-operational-semantics` / `9f02cfbc40499f326a506bd25a93c687440aad89`
+- PR: https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/27
+- CI/CodeRabbit: pending
 
 ## Автотесты
 
