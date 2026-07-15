@@ -20,8 +20,8 @@
 - `pnpm test` — passed, 321/321 workspace tests.
 - `pnpm build` — passed для всех workspace-пакетов; generated-only whitespace в `packages/db/ERD.md` отформатирован обратно, Prisma schema не менялась.
 - `git diff --check` — passed.
-- GitHub Actions `quality-gate` — pending.
-- CodeRabbit / review threads — pending.
+- GitHub Actions `quality-gate` — passed для code head `aa5fa32` ([run](https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29402818020/job/87311173377)).
+- CodeRabbit status context — success, но содержательный review не начался из-за внешнего review rate-limit (следующий слот через 12 минут). Компенсирующий независимый трёхпроходный review-субагент: финальный verdict P0/P1 не обнаружено. Thread-aware GraphQL audit: unresolved review threads `0`.
 
 ## Покрытие критических контрактов
 
