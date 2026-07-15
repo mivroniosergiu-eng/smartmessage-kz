@@ -36,9 +36,7 @@ describe('WA lifecycle queue contract', () => {
     )
     const concurrentWorker = createWaLifecycleOwnerQueueName('worker-slot-b')
 
-    expect(new Set(sequentialGenerations)).toEqual(
-      new Set(['wa-lifecycle-owner.worker-slot-a']),
-    )
+    expect(new Set(sequentialGenerations)).toEqual(new Set(['wa-lifecycle-owner.worker-slot-a']))
     expect(concurrentWorker).not.toBe(sequentialGenerations[0])
   })
 
@@ -78,6 +76,32 @@ describe('WA lifecycle queue contract', () => {
         RENEW_WA_INSTANCE_JOB_NAME,
       ),
     ).toThrow('positive expectedOwnerEpoch')
+    expect(() =>
+      parseWaLifecycleOwnerCommandJobPayload(
+        {
+          instanceId: 'instance-1',
+          expectedOwnerWorkerId: 'worker-a',
+        },
+        RENEW_WA_INSTANCE_JOB_NAME,
+      ),
+    ).toThrow('positive expectedOwnerEpoch')
+  })
+
+  it('keeps dotted owner job-id segments unambiguous', () => {
+    const first = createWaLifecycleOwnerJobId(STOP_WA_INSTANCE_JOB_NAME, {
+      instanceId: 'a.b',
+      expectedOwnerWorkerId: 'c',
+      expectedOwnerEpoch: '1',
+    })
+    const second = createWaLifecycleOwnerJobId(STOP_WA_INSTANCE_JOB_NAME, {
+      instanceId: 'a',
+      expectedOwnerWorkerId: 'b.c',
+      expectedOwnerEpoch: '1',
+    })
+
+    expect(first).not.toBe(second)
+    expect(first).toContain('a%2Eb')
+    expect(second).toContain('b%2Ec')
   })
 
   it('accepts and normalizes a lifecycle instance payload', () => {

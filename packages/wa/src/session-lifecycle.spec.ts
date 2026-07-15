@@ -1506,6 +1506,20 @@ describe('WaSessionLifecycleService', () => {
     )
   })
 
+  it('clears the transport-close deadline after an immediate shutdown close', async () => {
+    vi.useFakeTimers()
+    try {
+      const { lifecycle } = createHarness('worker-a')
+      await lifecycle.start('instance-shutdown-timer')
+
+      await lifecycle.shutdownAll()
+
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('waits for a pending start already chained into stop before shutdown resolves', async () => {
     const registry = new DeferredClaimOwnerRegistry()
     const sessions = new MockSessionManager()

@@ -72,15 +72,24 @@ export function parseWaLifecycleOwnerCommandJobPayload(
 export function createWaLifecycleOwnerJobId(
   jobName: WaLifecycleOwnerJobName,
   payload: unknown,
+  commandId?: string,
 ): string {
   const parsed = parseWaLifecycleOwnerCommandJobPayload(payload, jobName)
-  return [
+  const segments = [
     'wa-lifecycle-owner',
-    encodeURIComponent(jobName),
-    encodeURIComponent(parsed.instanceId),
-    encodeURIComponent(parsed.expectedOwnerWorkerId),
+    encodeJobIdSegment(jobName),
+    encodeJobIdSegment(parsed.instanceId),
+    encodeJobIdSegment(parsed.expectedOwnerWorkerId),
     parsed.expectedOwnerEpoch,
-  ].join('.')
+  ]
+  if (jobName === RENEW_WA_INSTANCE_JOB_NAME) {
+    const normalizedCommandId = commandId?.trim()
+    if (!normalizedCommandId) {
+      throw new TypeError('renew-wa-instance owner job requires a non-empty commandId')
+    }
+    segments.push(encodeJobIdSegment(normalizedCommandId))
+  }
+  return segments.join('.')
 }
 
 /** Создаёт Redis-соединение, совместимое с BullMQ (maxRetriesPerRequest: null). */
@@ -148,6 +157,10 @@ function throwInvalidWaLifecycleOwnerPayload(jobName: WaLifecycleOwnerJobName): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function encodeJobIdSegment(value: string): string {
+  return encodeURIComponent(value).replaceAll('.', '%2E')
 }
 
 export type { Job, Processor, Queue, QueueEvents, Worker }

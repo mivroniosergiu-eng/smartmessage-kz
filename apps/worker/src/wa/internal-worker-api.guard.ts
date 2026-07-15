@@ -3,12 +3,13 @@ import { timingSafeEqual } from 'node:crypto'
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common'
 
 const INTERNAL_WORKER_TOKEN_HEADER = 'x-internal-worker-token'
+const FORBIDDEN_INTERNAL_WORKER_TOKENS = new Set(['change_me_to_a_random_internal_token'])
 
 @Injectable()
 export class InternalWorkerApiGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const expectedToken = process.env.WORKER_INTERNAL_API_TOKEN?.trim()
-    if (!expectedToken) {
+    if (!expectedToken || FORBIDDEN_INTERNAL_WORKER_TOKENS.has(expectedToken)) {
       throw new UnauthorizedException('Internal worker API is not configured')
     }
 
@@ -22,7 +23,10 @@ export class InternalWorkerApiGuard implements CanActivate {
   }
 }
 
-function readHeader(headers: Record<string, string | string[] | undefined>, name: string): string | undefined {
+function readHeader(
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string | undefined {
   const value = headers[name]
   if (Array.isArray(value)) return value[0]
 
@@ -33,7 +37,10 @@ function tokensEqual(received: string, expected: string): boolean {
   const receivedBuffer = Buffer.from(received)
   const expectedBuffer = Buffer.from(expected)
 
-  return receivedBuffer.length === expectedBuffer.length && timingSafeEqual(receivedBuffer, expectedBuffer)
+  return (
+    receivedBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(receivedBuffer, expectedBuffer)
+  )
 }
 
 interface InternalWorkerRequest {

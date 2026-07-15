@@ -100,12 +100,8 @@ interface ServiceFixture {
   }
   queueService: {
     enqueueStart: ReturnType<typeof vi.fn<(instanceId: string) => Promise<unknown>>>
-    enqueueStop: ReturnType<
-      typeof vi.fn<(instanceId: string, ownerWorkerId?: string) => Promise<unknown>>
-    >
-    enqueueRenew: ReturnType<
-      typeof vi.fn<(instanceId: string, ownerWorkerId?: string) => Promise<unknown>>
-    >
+    enqueueStop: ReturnType<typeof vi.fn<WaLifecycleQueueService['enqueueStop']>>
+    enqueueRenew: ReturnType<typeof vi.fn<WaLifecycleQueueService['enqueueRenew']>>
   }
   service: WaLifecycleCommandQueueService
 }

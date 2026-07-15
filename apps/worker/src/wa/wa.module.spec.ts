@@ -519,6 +519,40 @@ describe('WaModule', () => {
     }
   })
 
+  it('reaches fatal termination before the identity TTL when critical shutdown steps hang', async () => {
+    vi.useFakeTimers()
+    try {
+      const never = new Promise<void>(() => undefined)
+      const fatalStarted = vi.fn(async () => undefined)
+      const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
+        .overrideProvider(WA_REDIS_CONNECTION)
+        .useValue(createFakeRedisConnection())
+        .overrideProvider(WA_WORKER_IDENTITY_FATAL_HANDLER)
+        .useValue(fatalStarted)
+        .compile()
+      const lifecycle = moduleRef.get<WaSessionLifecycleService>(WA_SESSION_LIFECYCLE)
+      const identityLease = moduleRef.get<WaWorkerIdentityLease>(WA_WORKER_IDENTITY_LEASE)
+      const release = vi.spyOn(identityLease, 'release')
+      const stopRenewal = vi.spyOn(identityLease, 'stopRenewal')
+      vi.spyOn(lifecycle, 'shutdownAll').mockImplementation(() => never)
+      for (const worker of queueMock.workers) {
+        worker.pause.mockImplementation(() => never)
+        worker.close.mockImplementation(() => never)
+      }
+
+      const shutdown = moduleRef.close()
+      const rejected = expect(shutdown).rejects.toThrow('WA shutdown step timed out')
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      await rejected
+      expect(fatalStarted).toHaveBeenCalledOnce()
+      expect(stopRenewal).toHaveBeenCalled()
+      expect(release).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('continues every shutdown step and rethrows the first failure', async () => {
     const events: string[] = []
     const firstError = new Error('shared worker close failed')

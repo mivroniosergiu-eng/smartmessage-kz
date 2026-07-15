@@ -174,4 +174,43 @@ describe('InMemoryWaQrBootstrapRepository', () => {
       qrCode: 'new-qr',
     })
   })
+
+  it('rejects a different worker at the current epoch and preserves the QR', async () => {
+    const repository = new InMemoryWaQrBootstrapRepository()
+    const current = createWaQrPendingEvent({
+      instanceId: 'instance-same-epoch',
+      qrCode: 'current-qr',
+      expiresAt: new Date('2999-01-01T00:01:00.000Z'),
+    })
+    const conflicting = { ...current, qrCode: 'conflicting-qr' }
+    await repository.activateOwnership('instance-same-epoch', 'worker-a', 4n)
+    await repository.store(current, 'worker-a', 4n)
+
+    await expect(repository.activateOwnership('instance-same-epoch', 'worker-b', 4n)).resolves.toBe(
+      false,
+    )
+    await expect(repository.store(conflicting, 'worker-b', 4n)).resolves.toBe(false)
+    await expect(repository.clear('instance-same-epoch', 'worker-b', 4n)).resolves.toBe(false)
+    await expect(repository.getLatest('instance-same-epoch')).resolves.toMatchObject({
+      qrCode: 'current-qr',
+    })
+  })
+
+  it('normalizes a padded event instanceId before fence lookup and storage', async () => {
+    const repository = new InMemoryWaQrBootstrapRepository()
+    const event = createWaQrPendingEvent({
+      instanceId: 'instance-normalized',
+      qrCode: 'normalized-qr',
+      expiresAt: new Date('2999-01-01T00:01:00.000Z'),
+    })
+    await repository.activateOwnership('instance-normalized', 'worker-a', 1n)
+
+    await expect(
+      repository.store({ ...event, instanceId: ' instance-normalized ' }, 'worker-a', 1n),
+    ).resolves.toBe(true)
+    await expect(repository.getLatest('instance-normalized')).resolves.toMatchObject({
+      instanceId: 'instance-normalized',
+      qrCode: 'normalized-qr',
+    })
+  })
 })

@@ -25,7 +25,7 @@
 - старый ownership-loss close полностью завершается до same-process reclaim, поэтому retry старой generation не может закрыть новый transport;
 - стабильный `WA_WORKER_ID` deployment-слота защищён Redis exact-token lease; immediate и periodic renew имеют deadline `ttlMs/3`, consumers остаются `autorun: false` до привязки loss-supervisor и проверяют identity перед каждой job; duplicate live process не стартует, потеря/timeout renew fail-closed останавливает intake и transports, а owner queue не растут с каждым рестартом;
 - graceful shutdown без ожидания зависших BullMQ jobs останавливает intake обоих workers и активирует bounded physical transport close. Identity lease освобождается только после успешного закрытия sessions и обоих consumers; при ошибке lease сохраняется до TTL, а fatal termination запускается до queue/Redis/Prisma cleanup;
-- stop/renew revalidate Redis owner при исполнении; общая BullMQ-job ждёт owner ack, переживает падение/migration и привязывает directed job к конкретной epoch, чтобы старая команда не затронула новую сессию.
+- stop/renew revalidate Redis owner при исполнении; общая BullMQ-job ждёт owner ack в пределах единого deadline для readiness/enqueue/result, переживает падение/migration и привязывает directed job к конкретной epoch. Renew дополнительно получает уникальный per-command id с сохранением между retry, поэтому новый heartbeat в той же epoch не поглощается retained result старой команды.
 
 ## Остаток до DoD Фазы 1
 

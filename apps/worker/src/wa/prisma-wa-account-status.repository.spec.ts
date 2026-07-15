@@ -41,18 +41,19 @@ describe('PrismaWaAccountStatusRepository', () => {
       await createWaAccount('adapter-instance-main')
       await repository.activateOwnership('adapter-instance-main', 'worker-a', 1n)
 
-      if (method === 'markDisconnected') {
-        await repository.markDisconnected(
-          'adapter-instance-main',
-          'worker-a',
-          'connection_closed',
-          1n,
-        )
-      } else if (method === 'markBanned') {
-        await repository.markBanned('adapter-instance-main', 'worker-a', 'permanent_ban', 1n)
-      } else {
-        await repository[method]('adapter-instance-main', 'worker-a', 1n)
-      }
+      const updated =
+        method === 'markDisconnected'
+          ? await repository.markDisconnected(
+              'adapter-instance-main',
+              'worker-a',
+              'connection_closed',
+              1n,
+            )
+          : method === 'markBanned'
+            ? await repository.markBanned('adapter-instance-main', 'worker-a', 'permanent_ban', 1n)
+            : await repository[method]('adapter-instance-main', 'worker-a', 1n)
+
+      expect(updated).toBe(true)
 
       await expect(
         prisma.waAccount.findUniqueOrThrow({ where: { instanceId: 'adapter-instance-main' } }),

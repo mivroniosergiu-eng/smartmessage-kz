@@ -173,13 +173,19 @@ describe('WaLifecycleJobProcessor', () => {
       processor.process({
         name: RENEW_WA_INSTANCE_JOB_NAME,
         data: { instanceId: 'instance-owned' },
+        id: 'wa-lifecycle.renew-wa-instance.instance-owned',
+        timestamp: 1_784_111_200_000,
       }),
     ).resolves.toEqual({ instanceId: 'instance-owned', renewed: true })
 
-    expect(queueService.enqueueRenew).toHaveBeenCalledWith('instance-owned', {
-      owner: 'worker-owner',
-      epoch: 1n,
-    })
+    expect(queueService.enqueueRenew).toHaveBeenCalledWith(
+      'instance-owned',
+      {
+        owner: 'worker-owner',
+        epoch: 1n,
+      },
+      'wa-lifecycle.renew-wa-instance.instance-owned@1784111200000',
+    )
     expect(command.renewInstance).not.toHaveBeenCalled()
   })
 

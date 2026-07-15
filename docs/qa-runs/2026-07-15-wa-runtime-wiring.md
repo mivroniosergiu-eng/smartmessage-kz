@@ -2,7 +2,7 @@
 
 - Исполнитель: Codex task-agent + три implementation/review-субагента
 - Ветка: `feat/phase-1-wa-runtime-wiring`
-- PR/CI: будет заполнено после публикации
+- PR/CI: [PR #26](https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/26); initial `quality-gate` run [29411570078](https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29411570078) — passed; CodeRabbit — completed, 12 actionable threads обработаны follow-up diff.
 
 ## Автотесты
 
@@ -24,18 +24,23 @@
 - Review fix: immediate и periodic identity renew ограничены deadline `ttlMs/3`; never-settling Redis `EVAL` вызывает one-shot loss, поздний ответ fenced, а explicit `stopRenewal()` отменяет deadline без ложного callback.
 - Review fix: оба BullMQ consumers создаются с `autorun: false`, loss-supervisor привязывается до `run()`, а per-job identity fence закрывает остаточное окно между loss и остановкой intake.
 - Review fix: identity lease удаляется только после успешного physical session shutdown и закрытия обоих consumers. При ошибке renewal останавливается, lease остаётся до TTL, а bounded fatal handler вызывается до потенциально зависшего queue/Redis/Prisma cleanup.
+- CodeRabbit fix: один 15-секундный owner-ACK deadline теперь включает QueueEvents readiness, directed enqueue и result wait; timeout выполняет bounded best-effort close producer handles и отдаёт управление generic retry даже при зависшем cleanup.
+- CodeRabbit fix: distinct renew commands в одной ownership epoch получают разные command-id, а retry той же generic job переиспользует id. Dynamic job-id segments экранируют точки и не допускают collision.
+- CodeRabbit fix: pause, lifecycle shutdown и оба worker close имеют bounded deadlines; зависший critical step не блокирует identity retention и fatal termination до TTL.
+- CodeRabbit fix: публичный env-template не содержит usable internal token, а guard отвергает пустое и известное placeholder-значение.
+- CodeRabbit fix: in-memory/Prisma QR fences покрывают same-epoch foreign worker, in-memory event id нормализуется, а завершившийся transport close очищает и unref'ит timeout.
 - Интеграционный дефект, найденный полным suite: BullMQ отклонил `:` в owner queue name; контракт изменён на допустимый `wa-lifecycle-owner.<encodedWorkerId>`.
 - Safety-дефект, найденный полным suite: старый Nest-тест после real wiring открыл transport; тест теперь явно подменяет lifecycle и оба BullMQ workers, сеть не используется.
-- `pnpm --filter @smartmessage/wa test` — passed, 205/205.
+- `pnpm --filter @smartmessage/wa test` — passed, 208/208.
 - `pnpm --filter @smartmessage/wa lint` — passed.
 - `pnpm --filter @smartmessage/wa typecheck` — passed.
-- `pnpm --filter @smartmessage/queue test` — passed, 14/14.
+- `pnpm --filter @smartmessage/queue test` — passed, 15/15.
 - `pnpm --filter @smartmessage/queue lint` — passed.
-- `pnpm --filter @smartmessage/worker test` — passed, 133/133; `DATABASE_URL` передан только дочернему процессу из ignored env-файла без вывода значения.
+- `pnpm --filter @smartmessage/worker test` — passed, 141/141; `DATABASE_URL` передан только дочернему процессу из ignored env-файла без вывода значения.
 - `pnpm --filter @smartmessage/worker lint` — passed.
 - `pnpm typecheck` — passed для всех workspace-пакетов.
 - `pnpm lint` — passed без warnings.
-- `pnpm test` — passed, 409/409 workspace tests.
+- `pnpm test` — passed, 421/421 workspace tests.
 - `prisma validate` и `prisma migrate deploy` — passed; 7 migrations, pending migrations нет.
 - `pnpm build` — passed; generated ERD возвращён к canonical formatting.
 - `git diff --check` — passed.

@@ -7,7 +7,10 @@ import {
 } from '@smartmessage/queue'
 import { describe, expect, it, vi } from 'vitest'
 
-import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
+import {
+  WaLifecycleOwnerAckTimeoutError,
+  WaLifecycleQueueService,
+} from './wa-lifecycle-queue.service'
 
 describe('WaLifecycleQueueService', () => {
   it('enqueueStart adds a normalized start job with deterministic job id', async () => {
@@ -95,7 +98,10 @@ describe('WaLifecycleQueueService', () => {
         removeOnFail: true,
       }),
     )
-    expect(directedJob.waitUntilFinished).toHaveBeenCalledWith(queueEvents, 15_000)
+    expect(directedJob.waitUntilFinished).toHaveBeenCalledWith(queueEvents, expect.any(Number))
+    const ackTimeoutMs = directedJob.waitUntilFinished.mock.calls[0]?.[1]
+    expect(ackTimeoutMs).toBeGreaterThan(0)
+    expect(ackTimeoutMs).toBeLessThanOrEqual(15_000)
     expect(queueEvents.close).toHaveBeenCalledOnce()
     expect(directedQueue.close).toHaveBeenCalledOnce()
   })
@@ -168,11 +174,101 @@ describe('WaLifecycleQueueService', () => {
     directedJob.waitUntilFinished.mockRejectedValueOnce(timeout)
 
     await expect(
-      service.enqueueRenew('instance-owned', { owner: 'worker-dead', epoch: 3n }),
+      service.enqueueRenew('instance-owned', { owner: 'worker-dead', epoch: 3n }, 'generic-job@1'),
     ).rejects.toBe(timeout)
 
     expect(queueEvents.close).toHaveBeenCalledOnce()
     expect(directedQueue.close).toHaveBeenCalledOnce()
+  })
+
+  it('uses one owner-ack deadline across readiness and result waiting', async () => {
+    vi.useFakeTimers()
+    try {
+      const { directedJob, queueEvents, service } = createService()
+      queueEvents.waitUntilReady.mockImplementationOnce(
+        async () => await new Promise((resolve) => setTimeout(resolve, 10_000)),
+      )
+      directedJob.waitUntilFinished.mockResolvedValueOnce({
+        instanceId: 'instance-deadline',
+        stopped: true,
+      })
+
+      const result = service.enqueueStop('instance-deadline', {
+        owner: 'worker-deadline',
+        epoch: 8n,
+      })
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      await expect(result).resolves.toMatchObject({ stopped: true })
+      const remainingMs = directedJob.waitUntilFinished.mock.calls[0]?.[1]
+      expect(remainingMs).toBeGreaterThan(0)
+      expect(remainingMs).toBeLessThanOrEqual(5_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('times out owner readiness within the shared ack deadline and closes handles', async () => {
+    vi.useFakeTimers()
+    try {
+      const { directedQueue, queueEvents, service } = createService()
+      queueEvents.waitUntilReady.mockImplementationOnce(
+        async () => await new Promise(() => undefined),
+      )
+
+      const result = service.enqueueStop('instance-readiness-timeout', {
+        owner: 'worker-deadline',
+        epoch: 9n,
+      })
+      const rejected = expect(result).rejects.toBeInstanceOf(WaLifecycleOwnerAckTimeoutError)
+      await vi.advanceTimersByTimeAsync(15_000)
+
+      await rejected
+      expect(directedQueue.add).not.toHaveBeenCalled()
+      expect(queueEvents.close).toHaveBeenCalledOnce()
+      expect(directedQueue.close).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not let stuck producer cleanup suppress the owner timeout and generic retry', async () => {
+    vi.useFakeTimers()
+    try {
+      const { directedQueue, queueEvents, service } = createService()
+      const never = new Promise<void>(() => undefined)
+      queueEvents.waitUntilReady.mockImplementationOnce(
+        async () => await new Promise(() => undefined),
+      )
+      queueEvents.close.mockImplementation(() => never)
+      directedQueue.close.mockImplementation(() => never)
+
+      const result = service.enqueueStop('instance-cleanup-timeout', {
+        owner: 'worker-deadline',
+        epoch: 10n,
+      })
+      const rejected = expect(result).rejects.toBeInstanceOf(WaLifecycleOwnerAckTimeoutError)
+      await vi.advanceTimersByTimeAsync(16_000)
+
+      await rejected
+      expect(queueEvents.close).toHaveBeenCalledOnce()
+      expect(directedQueue.close).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reuses a renew command id for retry but separates distinct renew commands', async () => {
+    const { directedQueue, service } = createService()
+    const ownership = { owner: 'worker-renew', epoch: 3n }
+
+    await service.enqueueRenew('instance-renew', ownership, 'generic-job@100')
+    await service.enqueueRenew('instance-renew', ownership, 'generic-job@100')
+    await service.enqueueRenew('instance-renew', ownership, 'generic-job@200')
+
+    const jobIds = directedQueue.add.mock.calls.map((call) => call[2].jobId)
+    expect(jobIds[0]).toBe(jobIds[1])
+    expect(jobIds[2]).not.toBe(jobIds[0])
   })
 
   it('adds stop and renew commands with bounded retries for owner discovery races', async () => {

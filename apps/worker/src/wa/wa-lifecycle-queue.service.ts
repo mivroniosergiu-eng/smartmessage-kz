@@ -29,6 +29,14 @@ type WaLifecycleJobPayload = WaLifecycleInstanceJobPayload | WaLifecycleOwnerCom
 const OWNER_COMMAND_ATTEMPTS = 8
 const OWNER_COMMAND_BACKOFF_MS = 5_000
 const OWNER_ACK_TIMEOUT_MS = 15_000
+const OWNER_HANDLE_CLOSE_TIMEOUT_MS = 1_000
+
+export class WaLifecycleOwnerAckTimeoutError extends Error {
+  constructor(readonly queueName: string) {
+    super(`WA lifecycle owner acknowledgement timed out: ${queueName}`)
+    this.name = 'WaLifecycleOwnerAckTimeoutError'
+  }
+}
 
 interface WaLifecycleQueuePort {
   add(
@@ -90,8 +98,12 @@ export class WaLifecycleQueueService {
     return this.enqueue(STOP_WA_INSTANCE_JOB_NAME, instanceId, ownership)
   }
 
-  async enqueueRenew(instanceId: string, ownership?: WaOwnership): Promise<unknown> {
-    return this.enqueue(RENEW_WA_INSTANCE_JOB_NAME, instanceId, ownership)
+  async enqueueRenew(
+    instanceId: string,
+    ownership?: WaOwnership,
+    commandId?: string,
+  ): Promise<unknown> {
+    return this.enqueue(RENEW_WA_INSTANCE_JOB_NAME, instanceId, ownership, commandId)
   }
 
   async hasPendingStart(instanceId: string): Promise<boolean> {
@@ -113,6 +125,7 @@ export class WaLifecycleQueueService {
     jobName: WaLifecycleJobName,
     instanceId: string,
     ownership?: WaOwnership,
+    commandId?: string,
   ): Promise<unknown> {
     let payload: WaLifecycleJobPayload = parseWaLifecycleInstanceJobPayload({ instanceId }, jobName)
     let jobId = createWaLifecycleJobId(jobName, payload)
@@ -128,7 +141,7 @@ export class WaLifecycleQueueService {
         },
         jobName,
       )
-      jobId = createWaLifecycleOwnerJobId(jobName, payload)
+      jobId = createWaLifecycleOwnerJobId(jobName, payload, commandId)
     }
     const options: WaLifecycleJobOptions = ownership
       ? {
@@ -154,16 +167,67 @@ export class WaLifecycleQueueService {
     const queueName = createWaLifecycleOwnerQueueName(ownership.owner)
     const directedQueue = this.queueFactory(queueName)
     const queueEvents = this.queueEventsFactory(queueName)
+    const deadline = Date.now() + OWNER_ACK_TIMEOUT_MS
     try {
-      await queueEvents.waitUntilReady()
-      const directedJob = await directedQueue.add(jobName, payload, options)
-      return await directedJob.waitUntilFinished(queueEvents, OWNER_ACK_TIMEOUT_MS)
+      await withinOwnerAckDeadline(queueEvents.waitUntilReady(), deadline, queueName)
+      const directedJob = await withinOwnerAckDeadline(
+        directedQueue.add(jobName, payload, options),
+        deadline,
+        queueName,
+      )
+      const remainingMs = remainingOwnerAckTime(deadline, queueName)
+      return await withinOwnerAckDeadline(
+        directedJob.waitUntilFinished(queueEvents, remainingMs),
+        deadline,
+        queueName,
+      )
     } finally {
-      try {
-        await queueEvents.close()
-      } finally {
-        await directedQueue.close()
-      }
+      await Promise.all([
+        settleOwnerHandleClose(() => queueEvents.close()),
+        settleOwnerHandleClose(() => directedQueue.close()),
+      ])
     }
+  }
+}
+
+async function settleOwnerHandleClose(operation: () => Promise<void>): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<void>((resolve) => {
+    timeout = setTimeout(resolve, OWNER_HANDLE_CLOSE_TIMEOUT_MS)
+    timeout.unref?.()
+  })
+  try {
+    await Promise.race([
+      Promise.resolve()
+        .then(operation)
+        .catch(() => undefined),
+      deadline,
+    ])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
+}
+
+function remainingOwnerAckTime(deadline: number, queueName: string): number {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) throw new WaLifecycleOwnerAckTimeoutError(queueName)
+  return remainingMs
+}
+
+async function withinOwnerAckDeadline<T>(
+  operation: Promise<T>,
+  deadline: number,
+  queueName: string,
+): Promise<T> {
+  const timeoutMs = remainingOwnerAckTime(deadline, queueName)
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new WaLifecycleOwnerAckTimeoutError(queueName)), timeoutMs)
+    timeout.unref?.()
+  })
+  try {
+    return await Promise.race([operation, expired])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
   }
 }

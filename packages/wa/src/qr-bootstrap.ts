@@ -80,8 +80,12 @@ export class InMemoryWaQrBootstrapRepository implements WaQrBootstrapRepository 
   }
 
   async store(event: WaQrPendingEvent, workerId: string, epoch: bigint): Promise<boolean> {
-    if (!this.matchesFence(event.instanceId, workerId, epoch)) return false
-    this.latest.set(event.instanceId, { event: cloneEvent(event), epoch })
+    const instanceId = normalizeNonEmptyString(event.instanceId, 'instanceId')
+    if (!this.matchesFence(instanceId, workerId, epoch)) return false
+    this.latest.set(instanceId, {
+      event: cloneEvent({ ...event, instanceId }),
+      epoch,
+    })
     return true
   }
 

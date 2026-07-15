@@ -21,6 +21,7 @@ interface TimerRuntime {
   setInterval(handler: () => void, timeoutMs: number): unknown
   clearInterval(handle: unknown): void
   setTimeout(handler: () => void, timeoutMs: number): unknown
+  clearTimeout(handle: unknown): void
 }
 
 interface ActiveSupervision {
@@ -977,18 +978,24 @@ export class WaSessionLifecycleService {
     return new Promise<SessionState>((resolve, reject) => {
       let settled = false
       let timeoutStarted = false
+      let timeoutHandle: unknown
       const finish = (): boolean => {
         if (settled) return false
         settled = true
         signal.removeEventListener('abort', startShutdownTimeout)
+        if (timeoutHandle !== undefined) {
+          timerRuntime.clearTimeout(timeoutHandle)
+          timeoutHandle = undefined
+        }
         return true
       }
       const startShutdownTimeout = (): void => {
         if (timeoutStarted) return
         timeoutStarted = true
-        timerRuntime.setTimeout(() => {
+        timeoutHandle = timerRuntime.setTimeout(() => {
           if (finish()) reject(new WaSessionTransportCloseTimeoutError(instanceId))
         }, SHUTDOWN_CLOSE_TIMEOUT_MS)
+        unrefTimer(timeoutHandle)
       }
 
       signal.addEventListener('abort', startShutdownTimeout, { once: true })

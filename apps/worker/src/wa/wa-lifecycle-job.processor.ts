@@ -64,7 +64,8 @@ export class WaLifecycleJobProcessor {
   ) {}
 
   async process(
-    job: Pick<Job<unknown>, 'name' | 'data'> & Partial<Pick<Job<unknown>, 'queueName'>>,
+    job: Pick<Job<unknown>, 'name' | 'data'> &
+      Partial<Pick<Job<unknown>, 'id' | 'queueName' | 'timestamp'>>,
   ): Promise<WaLifecycleJobResult> {
     const queueName = job.queueName ?? WA_LIFECYCLE_QUEUE_NAME
     assertWaLifecycleQueueName(queueName)
@@ -89,6 +90,7 @@ export class WaLifecycleJobProcessor {
           payload.instanceId,
           queueName,
           job.data,
+          job,
           () => this.commands.stopInstance(payload.instanceId),
         )
 
@@ -105,6 +107,7 @@ export class WaLifecycleJobProcessor {
           payload.instanceId,
           queueName,
           job.data,
+          job,
           () => this.commands.renewInstance(payload.instanceId),
         )
 
@@ -124,6 +127,7 @@ export class WaLifecycleJobProcessor {
     instanceId: string,
     queueName: string,
     rawPayload: unknown,
+    genericJob: Partial<Pick<Job<unknown>, 'id' | 'timestamp'>>,
     executeLocally: () => Promise<boolean>,
   ): Promise<OwnerCommandOutcome> {
     if (queueName === WA_LIFECYCLE_QUEUE_NAME) {
@@ -135,7 +139,12 @@ export class WaLifecycleJobProcessor {
       const result = parseOwnerCommandResult(
         jobName,
         instanceId,
-        await this.enqueueForOwner(jobName, instanceId, ownership),
+        await this.enqueueForOwner(
+          jobName,
+          instanceId,
+          ownership,
+          jobName === RENEW_WA_INSTANCE_JOB_NAME ? createRenewCommandId(genericJob) : undefined,
+        ),
       )
       if (result.ownershipStale) {
         throw new WaLifecycleOwnerUnavailableError(instanceId, jobName)
@@ -182,10 +191,11 @@ export class WaLifecycleJobProcessor {
     jobName: OwnerLifecycleJobName,
     instanceId: string,
     ownership: WaOwnership,
+    commandId?: string,
   ): Promise<unknown> {
     return jobName === STOP_WA_INSTANCE_JOB_NAME
       ? this.queueService.enqueueStop(instanceId, ownership)
-      : this.queueService.enqueueRenew(instanceId, ownership)
+      : this.queueService.enqueueRenew(instanceId, ownership, commandId)
   }
 }
 
@@ -232,6 +242,14 @@ function sameOwnership(current: WaOwnership | null, expected: WaOwnership): bool
 
 function staleOwnershipOutcome(): OwnerCommandOutcome {
   return { completed: false, ownershipStale: true }
+}
+
+function createRenewCommandId(job: Partial<Pick<Job<unknown>, 'id' | 'timestamp'>>): string {
+  const id = job.id?.trim()
+  if (!id || !Number.isSafeInteger(job.timestamp) || (job.timestamp ?? 0) < 0) {
+    throw new TypeError('Generic WA renew job requires stable id and timestamp')
+  }
+  return `${id}@${String(job.timestamp)}`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

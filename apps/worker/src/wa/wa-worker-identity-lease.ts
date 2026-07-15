@@ -111,7 +111,6 @@ export class WaWorkerIdentityLease {
     )
     if (result !== 1) {
       if (result !== 0) throw new TypeError('Unexpected Redis worker identity acquire result')
-      await this.redis.get(this.key)
       throw new WaWorkerIdentityConflictError(this.workerId)
     }
 
@@ -146,13 +145,7 @@ export class WaWorkerIdentityLease {
   }
 
   async renew(): Promise<boolean> {
-    const result = await this.redis.eval(
-      RENEW_SCRIPT,
-      1,
-      this.key,
-      this.token,
-      String(this.ttlMs),
-    )
+    const result = await this.redis.eval(RENEW_SCRIPT, 1, this.key, this.token, String(this.ttlMs))
     return parseBooleanResult(result, 'renew')
   }
 
@@ -180,9 +173,12 @@ export class WaWorkerIdentityLease {
 
   private armRenewal(): void {
     const generation = this.renewalGeneration
-    this.renewalHandle = this.timer.setInterval(() => {
-      void this.runPeriodicRenewal(generation)
-    }, Math.max(1, Math.floor(this.ttlMs / 3)))
+    this.renewalHandle = this.timer.setInterval(
+      () => {
+        void this.runPeriodicRenewal(generation)
+      },
+      Math.max(1, Math.floor(this.ttlMs / 3)),
+    )
     unrefTimer(this.renewalHandle)
   }
 

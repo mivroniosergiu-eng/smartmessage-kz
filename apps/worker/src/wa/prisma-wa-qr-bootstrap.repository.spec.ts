@@ -137,6 +137,27 @@ describe('PrismaWaQrBootstrapRepository', () => {
       qrCode: 'fresh-qr',
     })
   })
+
+  it('rejects a different worker at the current epoch and preserves the QR', async () => {
+    await createWaAccount('qr-bootstrap-same-epoch')
+    await repository.activateOwnership('qr-bootstrap-same-epoch', 'worker-a', 5n)
+    const current = createWaQrPendingEvent({
+      instanceId: 'qr-bootstrap-same-epoch',
+      qrCode: 'current-qr',
+      expiresAt: new Date('2999-07-15T12:00:00.000Z'),
+    })
+    const conflicting = { ...current, qrCode: 'conflicting-qr' }
+    await repository.store(current, 'worker-a', 5n)
+
+    await expect(
+      repository.activateOwnership('qr-bootstrap-same-epoch', 'worker-b', 5n),
+    ).resolves.toBe(false)
+    await expect(repository.store(conflicting, 'worker-b', 5n)).resolves.toBe(false)
+    await expect(repository.clear('qr-bootstrap-same-epoch', 'worker-b', 5n)).resolves.toBe(false)
+    await expect(repository.getLatest('qr-bootstrap-same-epoch')).resolves.toMatchObject({
+      qrCode: 'current-qr',
+    })
+  })
 })
 
 async function createWaAccount(instanceId: string): Promise<void> {

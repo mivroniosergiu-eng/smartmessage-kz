@@ -69,6 +69,9 @@ import {
 
 const DEFAULT_OWNER_TTL_MS = 30_000
 const DEFAULT_WORKER_ID = `worker-${hostname()}-${process.pid}-${randomUUID()}`
+const SHUTDOWN_PAUSE_TIMEOUT_MS = 1_000
+const SHUTDOWN_LIFECYCLE_TIMEOUT_MS = 5_000
+const SHUTDOWN_WORKER_CLOSE_TIMEOUT_MS = 1_000
 export const WA_LIFECYCLE_WORKER = Symbol('WA_LIFECYCLE_WORKER')
 export const WA_OWNER_LIFECYCLE_WORKER = Symbol('WA_OWNER_LIFECYCLE_WORKER')
 
@@ -98,9 +101,14 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
   async onApplicationShutdown(): Promise<void> {
     let firstError: unknown
     let hasError = false
-    const attempt = async (operation: () => Promise<unknown>): Promise<boolean> => {
+    const attempt = async (
+      step: string,
+      operation: () => Promise<unknown>,
+      timeoutMs?: number,
+    ): Promise<boolean> => {
       try {
-        await operation()
+        const pending = operation()
+        await (timeoutMs === undefined ? pending : completeWithin(pending, timeoutMs, step))
         return true
       } catch (error: unknown) {
         if (!hasError) {
@@ -111,18 +119,38 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
       }
     }
 
-    await attempt(async () => {
-      await this.lifecycleWorker.pause?.(true)
-    })
-    await attempt(async () => {
-      await this.ownerLifecycleWorker.pause?.(true)
-    })
-    const sessionsClosed = await attempt(() => this.lifecycle.shutdownAll())
-    const lifecycleWorkerClosed = await attempt(() => this.lifecycleWorker.close(true))
-    const ownerLifecycleWorkerClosed = await attempt(() => this.ownerLifecycleWorker.close(true))
+    await attempt(
+      'pause shared lifecycle worker',
+      async () => {
+        await this.lifecycleWorker.pause?.(true)
+      },
+      SHUTDOWN_PAUSE_TIMEOUT_MS,
+    )
+    await attempt(
+      'pause owner lifecycle worker',
+      async () => {
+        await this.ownerLifecycleWorker.pause?.(true)
+      },
+      SHUTDOWN_PAUSE_TIMEOUT_MS,
+    )
+    const sessionsClosed = await attempt(
+      'close WA sessions',
+      () => this.lifecycle.shutdownAll(),
+      SHUTDOWN_LIFECYCLE_TIMEOUT_MS,
+    )
+    const lifecycleWorkerClosed = await attempt(
+      'close shared lifecycle worker',
+      () => this.lifecycleWorker.close(true),
+      SHUTDOWN_WORKER_CLOSE_TIMEOUT_MS,
+    )
+    const ownerLifecycleWorkerClosed = await attempt(
+      'close owner lifecycle worker',
+      () => this.ownerLifecycleWorker.close(true),
+      SHUTDOWN_WORKER_CLOSE_TIMEOUT_MS,
+    )
     const canReleaseIdentity = sessionsClosed && lifecycleWorkerClosed && ownerLifecycleWorkerClosed
     if (canReleaseIdentity) {
-      await attempt(() => this.identityLease.release())
+      await attempt('release worker identity', () => this.identityLease.release())
     } else {
       this.identityLease.stopRenewal()
       await settleWithin(
@@ -130,9 +158,9 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
         IDENTITY_FATAL_HANDLER_GRACE_MS,
       )
     }
-    await attempt(() => this.lifecycleQueue.close())
-    await attempt(() => this.connection.quit())
-    await attempt(() => prisma.$disconnect())
+    await attempt('close lifecycle queue', () => this.lifecycleQueue.close())
+    await attempt('close Redis connection', () => this.connection.quit())
+    await attempt('disconnect Prisma', () => prisma.$disconnect())
 
     if (hasError) throw firstError
   }
@@ -423,6 +451,13 @@ function toError(error: unknown): Error {
 
 const IDENTITY_FATAL_HANDLER_GRACE_MS = 1_000
 
+class WaShutdownStepTimeoutError extends Error {
+  constructor(readonly step: string) {
+    super(`WA shutdown step timed out: ${step}`)
+    this.name = 'WaShutdownStepTimeoutError'
+  }
+}
+
 function startWorker(worker: WaLifecycleWorker, supervisor: WaWorkerIdentityLossSupervisor): void {
   try {
     void worker.run().catch((error: unknown) => supervisor.reportLoss(toError(error)))
@@ -440,4 +475,21 @@ async function settleWithin(operation: Promise<unknown>, timeoutMs: number): Pro
   })
   await Promise.race([operation.catch(() => undefined), deadline])
   if (timeout !== undefined) clearTimeout(timeout)
+}
+
+async function completeWithin<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  step: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new WaShutdownStepTimeoutError(step)), timeoutMs)
+    timeout.unref?.()
+  })
+  try {
+    return await Promise.race([operation, deadline])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
 }
