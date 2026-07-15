@@ -3,7 +3,8 @@
 - Исполнитель: Codex task-agent; subagent review запрошен, но внешний сервис вернул `402 deactivated_workspace`
 - Ветка/коммит: `feat/phase-1-wa-receiver` / `cacf1bfd92558f21f4917f014b92d5ca6c2903c9`
 - PR: https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/28
-- CI/CodeRabbit: pending
+- CI: `quality-gate` passed — https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29440300895
+- CodeRabbit: check passed без inline threads, текстовый review rate-limited; выполнен локальный финальный review.
 
 ## Автотесты
 
@@ -21,7 +22,7 @@
 - `pnpm typecheck` — passed для всех workspace-пакетов.
 - `pnpm test:cov` — passed; WA 91.48% statements / 83.60% branches, receiver 87.05% / 78.35%; всего 501/501 workspace tests.
 - `pnpm build` — passed.
-- CI — pending.
+- CI `quality-gate` — passed, включая Playwright E2E и anti-weakening; unresolved review threads: 0.
 
 ## Ручной QA (QA_CHECKPOINTS.md §3.1 / §3.9)
 
