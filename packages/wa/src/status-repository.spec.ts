@@ -77,4 +77,38 @@ describe('InMemoryWaAccountStatusRepository', () => {
       epoch: 2n,
     })
   })
+
+  it('keeps banned monotonic and idempotent within the active fence', async () => {
+    const repository = new InMemoryWaAccountStatusRepository()
+    await repository.activateOwnership('instance-monotonic-ban', 'worker-a', 1n)
+    await repository.markBanned('instance-monotonic-ban', 'worker-a', 'permanent_ban', 1n)
+
+    await expect(
+      repository.markDisconnected('instance-monotonic-ban', 'worker-a', 'shutdown', 1n),
+    ).resolves.toBe(true)
+    await expect(repository.markLoggedOut('instance-monotonic-ban', 'worker-a', 1n)).resolves.toBe(
+      true,
+    )
+    await repository.markBanned('instance-monotonic-ban', 'worker-a', 'duplicate', 1n)
+
+    expect(repository.getLast('instance-monotonic-ban')).toMatchObject({
+      status: 'banned',
+      reason: 'permanent_ban',
+    })
+    expect(repository.getHistory('instance-monotonic-ban')).toHaveLength(1)
+  })
+
+  it('never shortens a persisted restriction window', async () => {
+    const repository = new InMemoryWaAccountStatusRepository()
+    const later = new Date('2026-07-16T12:00:00.000Z')
+    const earlier = new Date('2026-07-16T11:00:00.000Z')
+    await repository.activateOwnership('instance-restriction-max', 'worker-a', 1n)
+    await repository.markRestricted('instance-restriction-max', 'worker-a', later, 1n)
+    await repository.markRestricted('instance-restriction-max', 'worker-a', earlier, 1n)
+
+    expect(repository.getLast('instance-restriction-max')).toMatchObject({
+      status: 'restricted',
+      restrictedUntil: later,
+    })
+  })
 })

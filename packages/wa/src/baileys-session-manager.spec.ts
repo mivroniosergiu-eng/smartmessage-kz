@@ -595,6 +595,39 @@ describe('BaileysSessionManager', () => {
     expect(transport.connect).toHaveBeenCalledOnce()
   })
 
+  it('keeps the longest restriction window across repeated disconnect events', async () => {
+    const transport = createFakeTransport()
+    const manager = new BaileysSessionManager(transport, new InMemoryWaAuthStateStore())
+    const later = new Date('2026-07-16T12:00:00.000Z')
+    const earlier = new Date('2026-07-16T11:00:00.000Z')
+
+    await manager.connect('instance-restricted-window')
+    await manager.handleDisconnect('instance-restricted-window', 'restricted', later)
+    await manager.handleDisconnect('instance-restricted-window', 'restricted', earlier)
+
+    await expect(manager.getState('instance-restricted-window')).resolves.toMatchObject({
+      status: 'restricted',
+      lastDisconnectReason: 'restricted',
+      restrictedUntil: later,
+    })
+  })
+
+  it('clears auth on explicit logout without downgrading a banned account', async () => {
+    const transport = createFakeTransport()
+    const auth = new InMemoryWaAuthStateStore()
+    const manager = new BaileysSessionManager(transport, auth)
+    await auth.write('instance-banned-logout', { creds: { registered: true }, keys: {} })
+    await manager.handleDisconnect('instance-banned-logout', 'banned')
+
+    await expect(manager.logout('instance-banned-logout')).resolves.toMatchObject({
+      status: 'banned',
+      hasAuthState: false,
+      lastDisconnectReason: 'banned',
+    })
+    await expect(auth.has('instance-banned-logout')).resolves.toBe(false)
+    expect(transport.logout).not.toHaveBeenCalled()
+  })
+
   it('physically closes a legacy-banned transport while preserving terminal state', async () => {
     const transport = createFakeTransport()
     const manager = new BaileysSessionManager(transport, new InMemoryWaAuthStateStore())
@@ -615,6 +648,26 @@ describe('BaileysSessionManager', () => {
       status: 'banned',
       lastDisconnectReason: 'banned',
     })
+  })
+
+  it('physically closes a legacy-restricted transport while preserving cooldown state', async () => {
+    const transport = createFakeTransport()
+    const manager = new BaileysSessionManager(transport, new InMemoryWaAuthStateStore())
+    const restrictedUntil = new Date('2026-07-16T12:00:00.000Z')
+    await manager.connect('instance-restricted-close')
+    await manager.handleDisconnect('instance-restricted-close', 'restricted', restrictedUntil)
+
+    await expect(manager.closeTransport('instance-restricted-close')).resolves.toMatchObject({
+      status: 'restricted',
+      lastDisconnectReason: 'restricted',
+      restrictedUntil,
+    })
+    await expect(manager.closeTransport('instance-restricted-close')).resolves.toMatchObject({
+      status: 'restricted',
+      restrictedUntil,
+    })
+
+    expect(transport.closeTransport).toHaveBeenCalledOnce()
   })
 
   it.each([

@@ -14,8 +14,11 @@ import {
   writeBaileysAuthState,
   type BaileysAuthState,
 } from './baileys-auth-state-mapper'
-import type { BaileysTransportConnectInput, BaileysTransportConnector } from './baileys-transport-adapter'
-import type { SessionState, WaDisconnectReason } from './session'
+import type {
+  BaileysTransportConnectInput,
+  BaileysTransportConnector,
+} from './baileys-transport-adapter'
+import { createWaRestrictedUntil, type SessionState, type WaDisconnectReason } from './session'
 import {
   WaTransportAlreadyConnectedError,
   WaTransportCloseTimeoutError,
@@ -28,6 +31,7 @@ import {
 const DEFAULT_QR_TTL_MS = 60_000
 const DEFAULT_TRANSPORT_CLOSE_TIMEOUT_MS = 10_000
 const BINARY_JSON_MARKER = '__smartmessageWaBinary'
+const HTTP_TOO_MANY_REQUESTS = 429
 
 export interface BaileysSocketTransportConnectorOptions {
   now?: () => Date
@@ -409,9 +413,12 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
 
     if (update.connection !== 'close') return
 
-    const reason = disconnectReasonFromStatusCode(
-      getDisconnectStatusCode(update.lastDisconnect?.error),
-    )
+    const disconnectError = update.lastDisconnect?.error
+    const reason = disconnectReasonFromStatusCode(getDisconnectStatusCode(disconnectError))
+    const restrictedUntil =
+      reason === 'restricted'
+        ? createWaRestrictedUntil(this.now(), getRetryAfterMs(disconnectError, this.now()))
+        : undefined
     let clearError: unknown
     let hasClearError = false
     let persistenceError: unknown
@@ -454,7 +461,11 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     }
 
     try {
-      await active.callbacks?.onDisconnected?.({ instanceId, reason })
+      await active.callbacks?.onDisconnected?.({
+        instanceId,
+        reason,
+        ...(restrictedUntil ? { restrictedUntil } : {}),
+      })
     } finally {
       if (hasPersistenceError) {
         await this.reportError(instanceId, active.callbacks, persistenceError)
@@ -574,10 +585,34 @@ function normalizeTransportCloseTimeoutMs(timeoutMs: number): number {
 
 function disconnectReasonFromStatusCode(statusCode: number | undefined): WaDisconnectReason {
   if (statusCode === DisconnectReason.loggedOut) return 'logged_out'
+  if (statusCode === DisconnectReason.forbidden) return 'banned'
+  if (statusCode === HTTP_TOO_MANY_REQUESTS) return 'restricted'
   if (statusCode === DisconnectReason.restartRequired) return 'restart_required'
   if (statusCode === DisconnectReason.connectionClosed) return 'connection_closed'
 
   return 'transient'
+}
+
+function getRetryAfterMs(error: unknown, now: Date): number | undefined {
+  if (!isObject(error)) return undefined
+
+  const output = isObject(error.output) ? error.output : undefined
+  const headers =
+    (output && isObject(output.headers) ? output.headers : undefined) ??
+    (isObject(error.headers) ? error.headers : undefined)
+  if (!headers) return undefined
+
+  const header = Object.entries(headers).find(([name]) => name.toLowerCase() === 'retry-after')?.[1]
+  if (typeof header !== 'string' && typeof header !== 'number') return undefined
+
+  const value = String(header).trim()
+  if (value.length === 0) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1_000
+
+  const retryAt = Date.parse(value)
+  const retryAfterMs = retryAt - now.getTime()
+  return Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : undefined
 }
 
 function getDisconnectStatusCode(error: unknown): number | undefined {
@@ -616,9 +651,7 @@ function encodeJsonValue(value: unknown): WaAuthStateJsonValue {
   }
 
   if (Array.isArray(value)) {
-    return value
-      .filter((item) => item !== undefined)
-      .map((item) => encodeJsonValue(item))
+    return value.filter((item) => item !== undefined).map((item) => encodeJsonValue(item))
   }
 
   if (isObject(value)) {

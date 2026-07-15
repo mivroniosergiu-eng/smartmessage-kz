@@ -45,6 +45,7 @@ import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
 import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
 import { PrismaWaAccountStatusRepository } from './prisma-wa-account-status.repository'
+import { PrismaWaRestrictedRecoveryService } from './prisma-wa-restricted-recovery.service'
 import { PrismaWaQrBootstrapRepository } from './prisma-wa-qr-bootstrap.repository'
 import { PrismaWaAuthStateRepository } from './prisma-wa-auth-state.repository'
 import { WaAccountController } from './wa-account.controller'
@@ -52,6 +53,7 @@ import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { WaLifecycleJobProcessor } from './wa-lifecycle-job.processor'
 import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
+import { WaRestrictedRecoveryReconciler } from './wa-restricted-recovery-reconciler'
 import { WaWorkerIdentityConflictError, WaWorkerIdentityLease } from './wa-worker-identity-lease'
 import { WaWorkerIdentityLossGate } from './wa-worker-identity-supervisor'
 
@@ -141,6 +143,12 @@ describe('WaModule', () => {
       expect(moduleRef.get(PrismaWaAccountAdminService)).toBeInstanceOf(PrismaWaAccountAdminService)
       expect(moduleRef.get(WaAccountController)).toBeInstanceOf(WaAccountController)
       expect(moduleRef.get(WaLifecycleQueueService)).toBeInstanceOf(WaLifecycleQueueService)
+      expect(moduleRef.get(PrismaWaRestrictedRecoveryService)).toBeInstanceOf(
+        PrismaWaRestrictedRecoveryService,
+      )
+      expect(moduleRef.get(WaRestrictedRecoveryReconciler)).toBeInstanceOf(
+        WaRestrictedRecoveryReconciler,
+      )
       expect(moduleRef.get(WaLifecycleCommandQueueService)).toBeInstanceOf(
         WaLifecycleCommandQueueService,
       )
@@ -152,6 +160,40 @@ describe('WaModule', () => {
       expect(moduleRef.get(WA_OWNER_TTL_MS)).toBe(30_000)
     } finally {
       await moduleRef.close()
+    }
+  })
+
+  it('reconciles durable restricted recovery before starting lifecycle consumers', async () => {
+    const originalDatabaseUrl = process.env.DATABASE_URL
+    const originalNodeEnv = process.env.NODE_ENV
+    const originalWorkerId = process.env.WA_WORKER_ID
+    process.env.DATABASE_URL = 'postgresql://startup-recovery-test.invalid/db'
+    process.env.NODE_ENV = 'production'
+    process.env.WA_WORKER_ID = 'worker-startup-recovery-test'
+    const reconcile = vi.fn(async () => undefined)
+    const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
+      .overrideProvider(WA_REDIS_CONNECTION)
+      .useValue(createFakeRedisConnection())
+      .overrideProvider(WaRestrictedRecoveryReconciler)
+      .useValue({ reconcile })
+      .compile()
+
+    try {
+      expect(reconcile).toHaveBeenCalledOnce()
+      expect(queueMock.workers).toHaveLength(2)
+      for (const worker of queueMock.workers) {
+        expect(reconcile.mock.invocationCallOrder[0]).toBeLessThan(
+          worker.run.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+        )
+      }
+    } finally {
+      await moduleRef.close()
+      if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL
+      else process.env.DATABASE_URL = originalDatabaseUrl
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = originalNodeEnv
+      if (originalWorkerId === undefined) delete process.env.WA_WORKER_ID
+      else process.env.WA_WORKER_ID = originalWorkerId
     }
   })
 

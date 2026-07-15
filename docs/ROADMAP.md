@@ -96,7 +96,7 @@
 **Цель:** надёжное подключение WA-аккаунтов, одиночная отправка, приём входящих. Без массовой рассылки ещё.
 
 **Скоуп:**
-- `packages/wa`: `SessionManager` (Baileys, auth-state в Redis, сериализованный reconnect, watchdog без гонок), `Sender` (одиночная отправка text/media/button/list/poll, presence/typing), `Receiver` (входящие `messages.upsert/update` → доменные события).
+- `packages/wa`: `SessionManager` (Baileys, персистентный auth-state, сериализованный reconnect, watchdog без гонок), `Sender` (идемпотентная одиночная text-отправка), `Receiver` (входящие `messages.upsert/update` → доменные события).
 - `packages/wa`: `PhoneValidator` через очередь `validate-phone` (на основе `REUSE_DONOR.md` §1.4).
 - `apps/web`: страница подключения WA-аккаунта (QR), список аккаунтов со статусом, ручная отправка тестового сообщения.
 - `apps/worker`: WA-воркер, обработка событий подключения/дисконнекта.

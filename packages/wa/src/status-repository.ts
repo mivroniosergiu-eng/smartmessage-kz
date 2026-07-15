@@ -119,6 +119,17 @@ export class InMemoryWaAccountStatusRepository implements WaAccountStatusReposit
   private record(input: Omit<WaAccountStatusRecord, 'recordedAt'>): boolean {
     const fence = this.fences.get(input.instanceId)
     if (!fence || fence.workerId !== input.workerId || fence.epoch !== input.epoch) return false
+    const current = this.latest.get(input.instanceId)
+    if (current?.status === 'banned') return true
+    if (
+      current?.status === 'restricted' &&
+      input.status === 'restricted' &&
+      current.restrictedUntil &&
+      input.restrictedUntil &&
+      current.restrictedUntil >= input.restrictedUntil
+    ) {
+      return true
+    }
     const entry = cloneRecord({
       ...input,
       recordedAt: new Date(),

@@ -1,17 +1,22 @@
 import { Inject, Injectable } from '@nestjs/common'
 import {
+  LOGOUT_WA_INSTANCE_JOB_NAME,
+  RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
   RENEW_WA_INSTANCE_JOB_NAME,
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
   WA_LIFECYCLE_OWNER_RESULT_MAX_AGE_SECONDS,
   WA_LIFECYCLE_OWNER_RESULT_MAX_COUNT,
+  createRecoverRestrictedWaInstanceJobId,
   createWaLifecycleOwnerJobId,
   createWaLifecycleOwnerQueueName,
   createWaLifecycleJobId,
+  parseRecoverRestrictedWaInstanceJobPayload,
   parseWaLifecycleOwnerCommandJobPayload,
   parseWaLifecycleInstanceJobPayload,
 } from '@smartmessage/queue'
 import type {
+  RecoverRestrictedWaInstanceJobPayload,
   WaLifecycleInstanceJobPayload,
   WaLifecycleJobName,
   WaLifecycleOwnerCommandJobPayload,
@@ -24,10 +29,19 @@ import {
   WA_LIFECYCLE_QUEUE_FACTORY,
 } from './wa.tokens'
 
-type WaLifecycleJobPayload = WaLifecycleInstanceJobPayload | WaLifecycleOwnerCommandJobPayload
+type WaLifecycleJobPayload =
+  | WaLifecycleInstanceJobPayload
+  | WaLifecycleOwnerCommandJobPayload
+  | RecoverRestrictedWaInstanceJobPayload
+type WaLifecycleCommandJobName = Exclude<
+  WaLifecycleJobName,
+  typeof RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME
+>
 
 const OWNER_COMMAND_ATTEMPTS = 8
 const OWNER_COMMAND_BACKOFF_MS = 5_000
+const RESTRICTED_RECOVERY_ATTEMPTS = 8
+const RESTRICTED_RECOVERY_BACKOFF_MS = 5_000
 const OWNER_ACK_TIMEOUT_MS = 15_000
 const OWNER_HANDLE_CLOSE_TIMEOUT_MS = 1_000
 
@@ -76,6 +90,7 @@ interface WaLifecycleJobOptions {
     type: 'fixed'
     delay: number
   }
+  delay?: number
   jobId: string
   removeOnComplete: true | { age: number; count: number }
   removeOnFail: number | true
@@ -98,12 +113,34 @@ export class WaLifecycleQueueService {
     return this.enqueue(STOP_WA_INSTANCE_JOB_NAME, instanceId, ownership)
   }
 
+  async enqueueLogout(instanceId: string, ownership?: WaOwnership): Promise<unknown> {
+    return this.enqueue(LOGOUT_WA_INSTANCE_JOB_NAME, instanceId, ownership)
+  }
+
   async enqueueRenew(
     instanceId: string,
     ownership?: WaOwnership,
     commandId?: string,
   ): Promise<unknown> {
     return this.enqueue(RENEW_WA_INSTANCE_JOB_NAME, instanceId, ownership, commandId)
+  }
+
+  async enqueueRestrictedRecovery(instanceId: string, restrictedUntil: Date): Promise<unknown> {
+    const restrictedUntilMs = restrictedUntil.getTime()
+    const payload = parseRecoverRestrictedWaInstanceJobPayload({
+      instanceId,
+      restrictedUntil: Number.isFinite(restrictedUntilMs) ? restrictedUntil.toISOString() : '',
+    })
+    const delay = Math.max(0, restrictedUntilMs - Date.now())
+
+    return this.queue.add(RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME, payload, {
+      attempts: RESTRICTED_RECOVERY_ATTEMPTS,
+      backoff: { type: 'fixed', delay: RESTRICTED_RECOVERY_BACKOFF_MS },
+      delay,
+      jobId: createRecoverRestrictedWaInstanceJobId(payload),
+      removeOnComplete: true,
+      removeOnFail: 100,
+    })
   }
 
   async hasPendingStart(instanceId: string): Promise<boolean> {
@@ -122,7 +159,7 @@ export class WaLifecycleQueueService {
   }
 
   private async enqueue(
-    jobName: WaLifecycleJobName,
+    jobName: WaLifecycleCommandJobName,
     instanceId: string,
     ownership?: WaOwnership,
     commandId?: string,

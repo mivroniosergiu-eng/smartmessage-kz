@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  LOGOUT_WA_INSTANCE_JOB_NAME,
+  RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME,
   RENEW_WA_INSTANCE_JOB_NAME,
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
@@ -9,7 +11,9 @@ import {
   WA_LIFECYCLE_QUEUE_NAME,
   createWaLifecycleOwnerQueueName,
   createWaLifecycleOwnerJobId,
+  createRecoverRestrictedWaInstanceJobId,
   createWaLifecycleJobId,
+  parseRecoverRestrictedWaInstanceJobPayload,
   parseWaLifecycleInstanceJobPayload,
   parseWaLifecycleOwnerCommandJobPayload,
   parseStartWaInstanceJobPayload,
@@ -21,7 +25,53 @@ describe('WA lifecycle queue contract', () => {
     expect(createWaLifecycleOwnerQueueName(' worker/a ')).toBe('wa-lifecycle-owner.worker%2Fa')
     expect(START_WA_INSTANCE_JOB_NAME).toBe('start-wa-instance')
     expect(STOP_WA_INSTANCE_JOB_NAME).toBe('stop-wa-instance')
+    expect(LOGOUT_WA_INSTANCE_JOB_NAME).toBe('logout-wa-instance')
+    expect(RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME).toBe('recover-restricted-wa-instance')
     expect(RENEW_WA_INSTANCE_JOB_NAME).toBe('renew-wa-instance')
+  })
+
+  it('normalizes an exact restricted recovery timestamp into a stable distinct job id', () => {
+    const first = parseRecoverRestrictedWaInstanceJobPayload({
+      instanceId: ' tenant.1/primary ',
+      restrictedUntil: '2026-07-15T12:30:00.000Z',
+    })
+    const extended = {
+      ...first,
+      restrictedUntil: '2026-07-15T13:30:00.000Z',
+    }
+
+    expect(first).toEqual({
+      instanceId: 'tenant.1/primary',
+      restrictedUntil: '2026-07-15T12:30:00.000Z',
+    })
+    expect(createRecoverRestrictedWaInstanceJobId(first)).toBe(
+      'wa-lifecycle.recover-restricted-wa-instance.tenant%2E1%2Fprimary.1784118600000',
+    )
+    expect(createRecoverRestrictedWaInstanceJobId(extended)).not.toBe(
+      createRecoverRestrictedWaInstanceJobId(first),
+    )
+    expect(createWaLifecycleJobId(RECOVER_RESTRICTED_WA_INSTANCE_JOB_NAME, first)).toBe(
+      createRecoverRestrictedWaInstanceJobId(first),
+    )
+  })
+
+  it('rejects malformed or non-canonical restricted recovery timestamps', () => {
+    for (const restrictedUntil of [
+      undefined,
+      '',
+      'not-a-date',
+      '2026-07-15T12:30:00Z',
+      '2026-07-15T14:30:00.000+02:00',
+    ]) {
+      expect(() =>
+        parseRecoverRestrictedWaInstanceJobPayload({
+          instanceId: 'instance-restricted',
+          restrictedUntil,
+        }),
+      ).toThrow(
+        'recover-restricted-wa-instance payload.restrictedUntil must be a canonical ISO timestamp',
+      )
+    }
   })
 
   it('rejects an empty owner worker id before constructing a directed queue name', () => {
@@ -62,6 +112,21 @@ describe('WA lifecycle queue contract', () => {
     })
     expect(createWaLifecycleOwnerJobId(STOP_WA_INSTANCE_JOB_NAME, payload)).toBe(
       'wa-lifecycle-owner.stop-wa-instance.instance-1.worker%2Fa.7',
+    )
+  })
+
+  it('creates a stable fenced owner job id for idempotent explicit logout', () => {
+    const payload = parseWaLifecycleOwnerCommandJobPayload(
+      {
+        instanceId: ' instance-logout ',
+        expectedOwnerWorkerId: ' worker-a ',
+        expectedOwnerEpoch: '9',
+      },
+      LOGOUT_WA_INSTANCE_JOB_NAME,
+    )
+
+    expect(createWaLifecycleOwnerJobId(LOGOUT_WA_INSTANCE_JOB_NAME, payload)).toBe(
+      'wa-lifecycle-owner.logout-wa-instance.instance-logout.worker-a.9',
     )
   })
 

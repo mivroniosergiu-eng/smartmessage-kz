@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InMemoryWaAuthStateStore } from './auth-state'
 import { BaileysAuthStateMapperError } from './baileys-auth-state-mapper'
 import { BaileysSocketTransportConnector } from './baileys-connector'
-import type { SessionState } from './session'
+import { MIN_WA_RESTRICTION_MS, type SessionState } from './session'
 import {
   WaTransportAlreadyConnectedError,
   WaTransportCloseTimeoutError,
@@ -289,9 +289,9 @@ describe('BaileysSocketTransportConnector', () => {
         error: closeError,
       })
       expect(onUnhandledRejection).not.toHaveBeenCalled()
-      await expect(connector.connect({ instanceId: 'instance-close-error' })).rejects.toBeInstanceOf(
-        WaTransportAlreadyConnectedError,
-      )
+      await expect(
+        connector.connect({ instanceId: 'instance-close-error' }),
+      ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
       await expect(connector.closeTransport('instance-close-error')).resolves.toMatchObject({
         status: 'disconnected',
       })
@@ -425,9 +425,9 @@ describe('BaileysSocketTransportConnector', () => {
         instanceId: 'instance-close-timeout',
         error: closeError,
       })
-      await expect(connector.connect({ instanceId: 'instance-close-timeout' })).rejects.toBeInstanceOf(
-        WaTransportAlreadyConnectedError,
-      )
+      await expect(
+        connector.connect({ instanceId: 'instance-close-timeout' }),
+      ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
       expect(vi.getTimerCount()).toBe(0)
 
       await socket.emit('connection.update', {
@@ -640,7 +640,9 @@ describe('BaileysSocketTransportConnector', () => {
     clearGate.resolve(undefined)
     await loggedOut.promise
     await flushAsyncEvents()
-    await expect(connector.connect({ instanceId: 'instance-remote-cleanup' })).resolves.toMatchObject({
+    await expect(
+      connector.connect({ instanceId: 'instance-remote-cleanup' }),
+    ).resolves.toMatchObject({
       hasAuthState: false,
     })
   })
@@ -670,9 +672,9 @@ describe('BaileysSocketTransportConnector', () => {
 
     await expect(store.has('instance-stale-close')).resolves.toBe(true)
     expect(callbacks.onLoggedOut).not.toHaveBeenCalled()
-    await expect(
-      connector.connect({ instanceId: 'instance-stale-close' }),
-    ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+    await expect(connector.connect({ instanceId: 'instance-stale-close' })).rejects.toBeInstanceOf(
+      WaTransportAlreadyConnectedError,
+    )
   })
 
   it('drains an in-flight auth write before logout clears persisted state', async () => {
@@ -1026,6 +1028,56 @@ describe('BaileysSocketTransportConnector', () => {
     })
   })
 
+  it('maps Baileys forbidden close to a terminal banned disconnect', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const store = new InMemoryWaAuthStateStore()
+    await store.write('instance-forbidden', { creds: { registered: true }, keys: {} })
+    const callbacks: WaTransportCallbacks = { onDisconnected: vi.fn() }
+    const connector = new BaileysSocketTransportConnector(store)
+
+    await connector.connect({ instanceId: 'instance-forbidden', callbacks })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: {
+        error: createBaileysCloseError(baileysMock.DisconnectReason.forbidden),
+        date: new Date(),
+      },
+    })
+    await flushAsyncEvents()
+
+    expect(callbacks.onDisconnected).toHaveBeenCalledWith({
+      instanceId: 'instance-forbidden',
+      reason: 'banned',
+    })
+    await expect(store.has('instance-forbidden')).resolves.toBe(true)
+  })
+
+  it('maps HTTP 429 to restricted and clamps Retry-After to the safe minimum', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const now = new Date('2026-07-15T10:00:00.000Z')
+    const callbacks: WaTransportCallbacks = { onDisconnected: vi.fn() }
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore(), {
+      now: () => now,
+    })
+    const error = createBaileysCloseError(429)
+    error.output.headers = { 'retry-after': '1' }
+
+    await connector.connect({ instanceId: 'instance-restricted', callbacks })
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error, date: new Date() },
+    })
+    await flushAsyncEvents()
+
+    expect(callbacks.onDisconnected).toHaveBeenCalledWith({
+      instanceId: 'instance-restricted',
+      reason: 'restricted',
+      restrictedUntil: new Date(now.getTime() + MIN_WA_RESTRICTION_MS),
+    })
+  })
+
   it('reads and writes auth-state through WaAuthStateStore', async () => {
     const socket = createFakeBaileysSocket()
     baileysMock.makeWASocket.mockReturnValueOnce(socket)
@@ -1262,10 +1314,10 @@ function createFakeBaileysSocket(): FakeBaileysSocket {
 }
 
 function createBaileysCloseError(statusCode: number): Error & {
-  output: { statusCode: number }
+  output: { statusCode: number; headers?: Record<string, string> }
 } {
   const error = new Error(`Baileys close ${statusCode}`) as Error & {
-    output: { statusCode: number }
+    output: { statusCode: number; headers?: Record<string, string> }
   }
   error.output = { statusCode }
   return error
