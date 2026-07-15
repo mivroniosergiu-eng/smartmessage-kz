@@ -5,11 +5,13 @@ import { InMemoryWaAccountStatusRepository } from './status-repository'
 describe('InMemoryWaAccountStatusRepository', () => {
   it('stores the latest status per instance and keeps ordered history', async () => {
     const repository = new InMemoryWaAccountStatusRepository()
+    await repository.activateOwnership('instance-1', 'worker-a', 1n)
+    await repository.activateOwnership('instance-2', 'worker-b', 1n)
 
-    await repository.markConnecting('instance-1', 'worker-a')
-    await repository.markConnected('instance-1', 'worker-a')
-    await repository.markDisconnected('instance-1', 'worker-a', 'connection_closed')
-    await repository.markConnecting('instance-2', 'worker-b')
+    await repository.markConnecting('instance-1', 'worker-a', 1n)
+    await repository.markConnected('instance-1', 'worker-a', 1n)
+    await repository.markDisconnected('instance-1', 'worker-a', 'connection_closed', 1n)
+    await repository.markConnecting('instance-2', 'worker-b', 1n)
 
     expect(repository.getHistory('instance-1').map((entry) => entry.status)).toEqual([
       'connecting',
@@ -32,10 +34,13 @@ describe('InMemoryWaAccountStatusRepository', () => {
   it('stores logged_out, restricted, and banned statuses with expected details', async () => {
     const repository = new InMemoryWaAccountStatusRepository()
     const restrictedUntil = new Date('2026-07-02T12:00:00.000Z')
+    await repository.activateOwnership('instance-logout', 'worker-a', 1n)
+    await repository.activateOwnership('instance-restricted', 'worker-a', 1n)
+    await repository.activateOwnership('instance-banned', 'worker-a', 1n)
 
-    await repository.markLoggedOut('instance-logout', 'worker-a')
-    await repository.markRestricted('instance-restricted', 'worker-a', restrictedUntil)
-    await repository.markBanned('instance-banned', 'worker-a', 'permanent ban')
+    await repository.markLoggedOut('instance-logout', 'worker-a', 1n)
+    await repository.markRestricted('instance-restricted', 'worker-a', restrictedUntil, 1n)
+    await repository.markBanned('instance-banned', 'worker-a', 'permanent ban', 1n)
 
     expect(repository.getLast('instance-logout')).toMatchObject({
       instanceId: 'instance-logout',
@@ -53,6 +58,23 @@ describe('InMemoryWaAccountStatusRepository', () => {
       workerId: 'worker-a',
       status: 'banned',
       reason: 'permanent ban',
+    })
+  })
+
+  it('rejects a stale epoch after a newer owner fence is active', async () => {
+    const repository = new InMemoryWaAccountStatusRepository()
+    await repository.activateOwnership('instance-fenced', 'worker-a', 1n)
+    await repository.markConnected('instance-fenced', 'worker-a', 1n)
+    await repository.activateOwnership('instance-fenced', 'worker-b', 2n)
+    await repository.markConnecting('instance-fenced', 'worker-b', 2n)
+
+    await expect(
+      repository.markDisconnected('instance-fenced', 'worker-a', 'late', 1n),
+    ).resolves.toBe(false)
+    expect(repository.getLast('instance-fenced')).toMatchObject({
+      workerId: 'worker-b',
+      status: 'connecting',
+      epoch: 2n,
     })
   })
 })

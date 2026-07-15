@@ -34,14 +34,16 @@ describe('PrismaWaQrBootstrapRepository', () => {
       createdAt: new Date('2026-07-06T09:00:00.000Z'),
       expiresAt: new Date('2026-07-06T09:01:00.000Z'),
     })
+    await repository.activateOwnership('qr-bootstrap-instance', 'worker-a', 1n)
 
-    await repository.store(event)
+    await repository.store(event, 'worker-a', 1n)
 
     await expect(repository.getLatest(' qr-bootstrap-instance ')).resolves.toEqual(event)
   })
 
   it('updates the latest QR bootstrap event for the same instanceId', async () => {
     await createWaAccount('qr-bootstrap-update-instance')
+    await repository.activateOwnership('qr-bootstrap-update-instance', 'worker-a', 1n)
     await repository.store(
       createWaQrPendingEvent({
         instanceId: 'qr-bootstrap-update-instance',
@@ -49,6 +51,8 @@ describe('PrismaWaQrBootstrapRepository', () => {
         createdAt: new Date('2026-07-06T09:00:00.000Z'),
         expiresAt: new Date('2026-07-06T09:01:00.000Z'),
       }),
+      'worker-a',
+      1n,
     )
     const latest = createWaQrPendingEvent({
       instanceId: 'qr-bootstrap-update-instance',
@@ -57,7 +61,7 @@ describe('PrismaWaQrBootstrapRepository', () => {
       expiresAt: new Date('2026-07-06T09:03:00.000Z'),
     })
 
-    await repository.store(latest)
+    await repository.store(latest, 'worker-a', 1n)
 
     await expect(repository.getLatest('qr-bootstrap-update-instance')).resolves.toEqual(latest)
     await expect(
@@ -67,6 +71,7 @@ describe('PrismaWaQrBootstrapRepository', () => {
 
   it('clears a QR bootstrap event without mutating the WaAccount', async () => {
     await createWaAccount('qr-bootstrap-clear-instance')
+    await repository.activateOwnership('qr-bootstrap-clear-instance', 'worker-a', 1n)
     await repository.store(
       createWaQrPendingEvent({
         instanceId: 'qr-bootstrap-clear-instance',
@@ -74,9 +79,11 @@ describe('PrismaWaQrBootstrapRepository', () => {
         createdAt: new Date('2026-07-06T09:00:00.000Z'),
         expiresAt: new Date('2026-07-06T09:01:00.000Z'),
       }),
+      'worker-a',
+      1n,
     )
 
-    await repository.clear(' qr-bootstrap-clear-instance ')
+    await repository.clear(' qr-bootstrap-clear-instance ', 'worker-a', 1n)
 
     await expect(repository.getLatest('qr-bootstrap-clear-instance')).resolves.toBeNull()
     await expect(
@@ -93,6 +100,8 @@ describe('PrismaWaQrBootstrapRepository', () => {
           createdAt: new Date('2026-07-06T09:00:00.000Z'),
           expiresAt: new Date('2026-07-06T09:01:00.000Z'),
         }),
+        'worker-a',
+        1n,
       ),
     ).rejects.toBeInstanceOf(WaQrBootstrapAccountNotFoundError)
 
@@ -104,6 +113,29 @@ describe('PrismaWaQrBootstrapRepository', () => {
         where: { instanceId: 'missing-qr-bootstrap-instance' },
       }),
     ).resolves.toHaveLength(0)
+  })
+
+  it('keeps the newer QR when a stale epoch attempts store and clear', async () => {
+    await createWaAccount('qr-bootstrap-fenced')
+    await repository.activateOwnership('qr-bootstrap-fenced', 'worker-old', 1n)
+    await repository.activateOwnership('qr-bootstrap-fenced', 'worker-new', 2n)
+    const fresh = createWaQrPendingEvent({
+      instanceId: 'qr-bootstrap-fenced',
+      qrCode: 'fresh-qr',
+      expiresAt: new Date('2999-07-15T12:00:00.000Z'),
+    })
+    const stale = createWaQrPendingEvent({
+      instanceId: 'qr-bootstrap-fenced',
+      qrCode: 'stale-qr',
+      expiresAt: new Date('2999-07-15T12:00:00.000Z'),
+    })
+    await repository.store(fresh, 'worker-new', 2n)
+
+    await expect(repository.store(stale, 'worker-old', 1n)).resolves.toBe(false)
+    await expect(repository.clear('qr-bootstrap-fenced', 'worker-old', 1n)).resolves.toBe(false)
+    await expect(repository.getLatest('qr-bootstrap-fenced')).resolves.toMatchObject({
+      qrCode: 'fresh-qr',
+    })
   })
 })
 

@@ -195,6 +195,7 @@ describe('WaAccountController', () => {
         status: WaAccountStatus.CONNECTING,
       }),
     )
+    await qrBootstrapRepository.activateOwnership('instance-qr', 'worker-test', 1n)
     await qrBootstrapRepository.store(
       createWaQrPendingEvent({
         instanceId: 'instance-qr',
@@ -202,6 +203,8 @@ describe('WaAccountController', () => {
         createdAt: new Date('2026-07-03T10:00:00.000Z'),
         expiresAt: new Date('2999-07-03T10:01:00.000Z'),
       }),
+      'worker-test',
+      1n,
     )
 
     await expect(controller.getQrBootstrapState('instance-qr')).resolves.toEqual({
@@ -220,6 +223,7 @@ describe('WaAccountController', () => {
         status: WaAccountStatus.CONNECTING,
       }),
     )
+    await qrBootstrapRepository.activateOwnership('instance-expired-qr', 'worker-test', 1n)
     await qrBootstrapRepository.store(
       createWaQrPendingEvent({
         instanceId: 'instance-expired-qr',
@@ -227,6 +231,8 @@ describe('WaAccountController', () => {
         createdAt: new Date('2026-07-03T10:00:00.000Z'),
         expiresAt: new Date('2026-07-03T10:01:00.000Z'),
       }),
+      'worker-test',
+      1n,
     )
 
     await expect(controller.getQrBootstrapState('instance-expired-qr')).resolves.toEqual({
@@ -260,6 +266,7 @@ describe('WaAccountController', () => {
         status: WaAccountStatus.CONNECTING,
       }),
     )
+    await qrBootstrapRepository.activateOwnership('instance-qr', 'worker-test', 1n)
     await qrBootstrapRepository.store(
       createWaQrPendingEvent({
         instanceId: 'instance-qr',
@@ -267,6 +274,8 @@ describe('WaAccountController', () => {
         createdAt: new Date('2026-07-03T10:00:00.000Z'),
         expiresAt: new Date('2999-07-03T10:01:00.000Z'),
       }),
+      'worker-test',
+      1n,
     )
     const app = await createHttpApp(adminService, commandQueue, qrBootstrapRepository)
 

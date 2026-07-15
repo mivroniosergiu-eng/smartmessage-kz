@@ -9,18 +9,23 @@ class FakeOwnerRegistry implements OwnerRegistry {
 
   async claim(instanceId: string, workerId: string): Promise<OwnerClaimResult> {
     const owner = this.owners.get(instanceId)
-    if (owner && owner !== workerId) return { claimed: false, owner }
+    if (owner && owner !== workerId) return { claimed: false, owner, epoch: 1n }
 
     this.owners.set(instanceId, workerId)
-    return { claimed: true, owner: workerId }
+    return { claimed: true, owner: workerId, epoch: 1n }
   }
 
-  async renew(instanceId: string, workerId: string): Promise<boolean> {
-    return this.owners.get(instanceId) === workerId
+  async renew(
+    instanceId: string,
+    workerId: string,
+    _ttlMs: number,
+    epoch: bigint,
+  ): Promise<boolean> {
+    return this.owners.get(instanceId) === workerId && epoch === 1n
   }
 
-  async release(instanceId: string, workerId: string): Promise<boolean> {
-    if (this.owners.get(instanceId) !== workerId) return false
+  async release(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    if (this.owners.get(instanceId) !== workerId || epoch !== 1n) return false
 
     this.owners.delete(instanceId)
     return true
@@ -28,6 +33,11 @@ class FakeOwnerRegistry implements OwnerRegistry {
 
   async getOwner(instanceId: string): Promise<string | null> {
     return this.owners.get(instanceId) ?? null
+  }
+
+  async getOwnership(instanceId: string) {
+    const owner = this.owners.get(instanceId)
+    return owner ? { owner, epoch: 1n } : null
   }
 
   setOwner(instanceId: string, workerId: string): void {
@@ -95,7 +105,9 @@ describe('OwnedSessionManager', () => {
     registry.setOwner('instance-transport-foreign', 'worker-a')
     const closeTransport = vi.spyOn(inner, 'closeTransport')
 
-    await expect(manager.closeTransport('instance-transport-foreign')).rejects.toBeInstanceOf(WaOwnershipError)
+    await expect(manager.closeTransport('instance-transport-foreign')).rejects.toBeInstanceOf(
+      WaOwnershipError,
+    )
     expect(closeTransport).not.toHaveBeenCalled()
   })
 
@@ -119,7 +131,9 @@ describe('OwnedSessionManager', () => {
 
     await expect(manager.connect('instance-5')).rejects.toMatchObject({ owner: null })
     await expect(manager.closeTransport('instance-5')).rejects.toMatchObject({ owner: null })
-    await expect(manager.handleDisconnect('instance-5', 'connection_closed')).rejects.toMatchObject({ owner: null })
+    await expect(manager.handleDisconnect('instance-5', 'connection_closed')).rejects.toMatchObject(
+      { owner: null },
+    )
     await expect(manager.logout('instance-5')).rejects.toMatchObject({ owner: null })
     expect(connect).not.toHaveBeenCalled()
     expect(closeTransport).not.toHaveBeenCalled()

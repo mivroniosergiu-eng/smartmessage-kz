@@ -31,9 +31,10 @@ export interface WaQrBootstrapState {
 }
 
 export interface WaQrBootstrapRepository {
-  store(event: WaQrPendingEvent): Promise<void>
+  activateOwnership(instanceId: string, workerId: string, epoch: bigint): Promise<boolean>
+  store(event: WaQrPendingEvent, workerId: string, epoch: bigint): Promise<boolean>
   getLatest(instanceId: string): Promise<WaQrPendingEvent | null>
-  clear(instanceId: string): Promise<void>
+  clear(instanceId: string, workerId: string, epoch: bigint): Promise<boolean>
 }
 
 export class WaQrCode {
@@ -61,20 +62,45 @@ export class WaQrCode {
 }
 
 export class InMemoryWaQrBootstrapRepository implements WaQrBootstrapRepository {
-  private readonly latest = new Map<string, WaQrPendingEvent>()
+  private readonly latest = new Map<string, { event: WaQrPendingEvent; epoch: bigint }>()
+  private readonly fences = new Map<string, { workerId: string; epoch: bigint }>()
 
-  async store(event: WaQrPendingEvent): Promise<void> {
-    this.latest.set(event.instanceId, cloneEvent(event))
+  async activateOwnership(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    const normalized = normalizeNonEmptyString(instanceId, 'instanceId')
+    const current = this.fences.get(normalized)
+    if (
+      current &&
+      (current.epoch > epoch || (current.epoch === epoch && current.workerId !== workerId))
+    ) {
+      return false
+    }
+    this.fences.set(normalized, { workerId, epoch })
+    if (this.latest.get(normalized)?.epoch !== epoch) this.latest.delete(normalized)
+    return true
+  }
+
+  async store(event: WaQrPendingEvent, workerId: string, epoch: bigint): Promise<boolean> {
+    if (!this.matchesFence(event.instanceId, workerId, epoch)) return false
+    this.latest.set(event.instanceId, { event: cloneEvent(event), epoch })
+    return true
   }
 
   async getLatest(instanceId: string): Promise<WaQrPendingEvent | null> {
     const event = this.latest.get(normalizeNonEmptyString(instanceId, 'instanceId'))
 
-    return event ? cloneEvent(event) : null
+    return event ? cloneEvent(event.event) : null
   }
 
-  async clear(instanceId: string): Promise<void> {
-    this.latest.delete(normalizeNonEmptyString(instanceId, 'instanceId'))
+  async clear(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    const normalized = normalizeNonEmptyString(instanceId, 'instanceId')
+    if (!this.matchesFence(normalized, workerId, epoch)) return false
+    this.latest.delete(normalized)
+    return true
+  }
+
+  private matchesFence(instanceId: string, workerId: string, epoch: bigint): boolean {
+    const fence = this.fences.get(instanceId)
+    return fence?.workerId === workerId && fence.epoch === epoch
   }
 }
 
@@ -108,7 +134,12 @@ export function resolveWaQrBootstrapState(input: {
   const qrEvent = input.qrEvent ?? null
   const now = input.now ?? new Date()
 
-  if (qrEvent && qrEvent.instanceId === instanceId && qrEvent.expiresAt.getTime() > now.getTime()) {
+  if (
+    input.accountStatus === 'connecting' &&
+    qrEvent &&
+    qrEvent.instanceId === instanceId &&
+    qrEvent.expiresAt.getTime() > now.getTime()
+  ) {
     return {
       instanceId,
       status: 'qr_pending',

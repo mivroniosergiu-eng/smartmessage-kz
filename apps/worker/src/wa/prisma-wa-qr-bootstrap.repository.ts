@@ -11,31 +11,51 @@ export class WaQrBootstrapAccountNotFoundError extends Error {
 export class PrismaWaQrBootstrapRepository implements WaQrBootstrapRepository {
   constructor(private readonly db: PrismaClient = prisma) {}
 
-  async store(event: WaQrPendingEvent): Promise<void> {
-    const instanceId = normalizeNonEmptyString(event.instanceId, 'instanceId')
-    const account = await this.db.waAccount.findUnique({
-      where: { instanceId },
-      select: { id: true },
+  async activateOwnership(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    const normalized = normalizeNonEmptyString(instanceId, 'instanceId')
+    return this.db.$transaction(async (tx) => {
+      const result = await tx.waAccount.updateMany({
+        where: {
+          instanceId: normalized,
+          OR: [
+            { ownershipEpoch: { lt: epoch } },
+            { ownershipEpoch: epoch, ownerWorkerId: workerId },
+          ],
+        },
+        data: { ownershipEpoch: epoch, ownerWorkerId: workerId },
+      })
+      if (result.count === 0) return this.resolveRejectedFence(tx, normalized)
+      await tx.waQrBootstrapEvent.deleteMany({
+        where: { instanceId: normalized, ownershipEpoch: { not: epoch } },
+      })
+      return true
     })
+  }
 
-    if (!account) {
-      throw new WaQrBootstrapAccountNotFoundError(instanceId)
-    }
+  async store(event: WaQrPendingEvent, workerId: string, epoch: bigint): Promise<boolean> {
+    const instanceId = normalizeNonEmptyString(event.instanceId, 'instanceId')
 
     try {
-      await this.db.waQrBootstrapEvent.upsert({
-        where: { instanceId },
-        create: {
-          instanceId,
-          qrCode: event.qrCode,
-          createdAt: cloneDate(event.createdAt),
-          expiresAt: cloneDate(event.expiresAt),
-        },
-        update: {
-          qrCode: event.qrCode,
-          createdAt: cloneDate(event.createdAt),
-          expiresAt: cloneDate(event.expiresAt),
-        },
+      return await this.db.$transaction(async (tx) => {
+        const fence = await this.lockFence(tx, instanceId, workerId, epoch)
+        if (!fence) return false
+        await tx.waQrBootstrapEvent.upsert({
+          where: { instanceId },
+          create: {
+            instanceId,
+            qrCode: event.qrCode,
+            ownershipEpoch: epoch,
+            createdAt: cloneDate(event.createdAt),
+            expiresAt: cloneDate(event.expiresAt),
+          },
+          update: {
+            qrCode: event.qrCode,
+            ownershipEpoch: epoch,
+            createdAt: cloneDate(event.createdAt),
+            expiresAt: cloneDate(event.expiresAt),
+          },
+        })
+        return true
       })
     } catch (error) {
       if (isPrismaError(error, 'P2003')) {
@@ -50,9 +70,10 @@ export class PrismaWaQrBootstrapRepository implements WaQrBootstrapRepository {
     const normalizedInstanceId = normalizeNonEmptyString(instanceId, 'instanceId')
     const event = await this.db.waQrBootstrapEvent.findUnique({
       where: { instanceId: normalizedInstanceId },
+      include: { waAccount: { select: { ownershipEpoch: true } } },
     })
 
-    if (!event) return null
+    if (!event || event.ownershipEpoch !== event.waAccount.ownershipEpoch) return null
 
     return {
       type: 'qr_pending',
@@ -63,10 +84,37 @@ export class PrismaWaQrBootstrapRepository implements WaQrBootstrapRepository {
     }
   }
 
-  async clear(instanceId: string): Promise<void> {
-    await this.db.waQrBootstrapEvent.deleteMany({
-      where: { instanceId: normalizeNonEmptyString(instanceId, 'instanceId') },
+  async clear(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    const normalized = normalizeNonEmptyString(instanceId, 'instanceId')
+    return this.db.$transaction(async (tx) => {
+      const fence = await this.lockFence(tx, normalized, workerId, epoch)
+      if (!fence) return false
+      await tx.waQrBootstrapEvent.deleteMany({ where: { instanceId: normalized } })
+      return true
     })
+  }
+
+  private async lockFence(
+    tx: Prisma.TransactionClient,
+    instanceId: string,
+    workerId: string,
+    epoch: bigint,
+  ): Promise<boolean> {
+    const result = await tx.waAccount.updateMany({
+      where: { instanceId, ownerWorkerId: workerId, ownershipEpoch: epoch },
+      data: { ownershipEpoch: epoch },
+    })
+    if (result.count > 0) return true
+    return this.resolveRejectedFence(tx, instanceId)
+  }
+
+  private async resolveRejectedFence(
+    tx: Prisma.TransactionClient,
+    instanceId: string,
+  ): Promise<false> {
+    const account = await tx.waAccount.findUnique({ where: { instanceId }, select: { id: true } })
+    if (!account) throw new WaQrBootstrapAccountNotFoundError(instanceId)
+    return false
   }
 }
 

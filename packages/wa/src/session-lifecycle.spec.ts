@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { OwnerClaimResult, OwnerRegistry } from './owner-registry'
 import { WaOwnershipError } from './owned-session-manager'
-import { InMemoryWaQrBootstrapRepository } from './qr-bootstrap'
+import { InMemoryWaQrBootstrapRepository, type WaQrPendingEvent } from './qr-bootstrap'
 import { WaSessionLifecycleService } from './session-lifecycle'
 import { MockSessionManager, type SessionState } from './session'
 import { InMemoryWaAccountStatusRepository } from './status-repository'
@@ -12,30 +12,45 @@ const shortTtlMs = 10
 
 class FakeOwnerRegistry implements OwnerRegistry {
   private readonly owners = new Map<string, string>()
+  private readonly epochs = new Map<string, bigint>()
 
   readonly claims: Array<{ instanceId: string; workerId: string; ttlMs: number }> = []
   readonly renewals: Array<{ instanceId: string; workerId: string; ttlMs: number }> = []
   readonly releases: Array<{ instanceId: string; workerId: string }> = []
   readonly events: string[] = []
 
-  async claim(instanceId: string, workerId: string, ttl: number): Promise<OwnerClaimResult> {
+  async claim(
+    instanceId: string,
+    workerId: string,
+    ttl: number,
+    minimumEpoch: bigint = 0n,
+  ): Promise<OwnerClaimResult> {
     this.claims.push({ instanceId, workerId, ttlMs: ttl })
     const owner = this.owners.get(instanceId)
-    if (owner && owner !== workerId) return { claimed: false, owner }
+    if (owner && owner !== workerId) {
+      return { claimed: false, owner, epoch: this.epochs.get(instanceId) ?? 1n }
+    }
 
+    const currentEpoch = this.epochs.get(instanceId) ?? 0n
+    const epoch =
+      owner && currentEpoch > minimumEpoch
+        ? currentEpoch
+        : (currentEpoch > minimumEpoch ? currentEpoch : minimumEpoch) + 1n
     this.owners.set(instanceId, workerId)
-    return { claimed: true, owner: workerId }
+    this.epochs.set(instanceId, epoch)
+    return { claimed: true, owner: workerId, epoch }
   }
 
-  async renew(instanceId: string, workerId: string, ttl: number): Promise<boolean> {
+  async renew(instanceId: string, workerId: string, ttl: number, epoch: bigint): Promise<boolean> {
     this.renewals.push({ instanceId, workerId, ttlMs: ttl })
-    return this.owners.get(instanceId) === workerId
+    return this.owners.get(instanceId) === workerId && this.epochs.get(instanceId) === epoch
   }
 
-  async release(instanceId: string, workerId: string): Promise<boolean> {
+  async release(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
     this.releases.push({ instanceId, workerId })
     this.events.push('release')
-    if (this.owners.get(instanceId) !== workerId) return false
+    if (this.owners.get(instanceId) !== workerId || this.epochs.get(instanceId) !== epoch)
+      return false
 
     this.owners.delete(instanceId)
     return true
@@ -45,8 +60,27 @@ class FakeOwnerRegistry implements OwnerRegistry {
     return this.owners.get(instanceId) ?? null
   }
 
+  async getOwnership(instanceId: string) {
+    const owner = this.owners.get(instanceId)
+    return owner ? { owner, epoch: this.epochs.get(instanceId) ?? 1n } : null
+  }
+
   setOwner(instanceId: string, workerId: string): void {
+    if (this.owners.get(instanceId) !== workerId) {
+      this.epochs.set(instanceId, (this.epochs.get(instanceId) ?? 0n) + 1n)
+    }
     this.owners.set(instanceId, workerId)
+  }
+
+  advanceEpoch(instanceId: string, workerId: string): bigint {
+    const epoch = (this.epochs.get(instanceId) ?? 0n) + 1n
+    this.epochs.set(instanceId, epoch)
+    this.owners.set(instanceId, workerId)
+    return epoch
+  }
+
+  expireOwner(instanceId: string): void {
+    this.owners.delete(instanceId)
   }
 
   clearRenewals(): void {
@@ -57,9 +91,20 @@ class FakeOwnerRegistry implements OwnerRegistry {
 class FailingRenewOwnerRegistry extends FakeOwnerRegistry {
   failRenewals = false
 
-  async renew(instanceId: string, workerId: string, ttl: number): Promise<boolean> {
+  async renew(instanceId: string, workerId: string, ttl: number, epoch: bigint): Promise<boolean> {
     if (this.failRenewals) throw new Error('redis unavailable')
-    return super.renew(instanceId, workerId, ttl)
+    return super.renew(instanceId, workerId, ttl, epoch)
+  }
+}
+
+class DeferredClaimOwnerRegistry extends FakeOwnerRegistry {
+  readonly claimStarted = createDeferred<void>()
+  readonly releaseClaim = createDeferred<void>()
+
+  async claim(instanceId: string, workerId: string, ttl: number): Promise<OwnerClaimResult> {
+    this.claimStarted.resolve(undefined)
+    await this.releaseClaim.promise
+    return super.claim(instanceId, workerId, ttl)
   }
 }
 
@@ -99,6 +144,17 @@ class DelayedConnectSessionManager extends MockSessionManager {
   }
 }
 
+class DeferredConnectSessionManager extends MockSessionManager {
+  readonly connectStarted = createDeferred<void>()
+  readonly releaseConnect = createDeferred<void>()
+
+  async connect(instanceId: string): Promise<SessionState> {
+    this.connectStarted.resolve(undefined)
+    await this.releaseConnect.promise
+    return super.connect(instanceId)
+  }
+}
+
 class DelayedGetStateSessionManager extends MockSessionManager {
   constructor(private readonly delayMs: number) {
     super()
@@ -110,9 +166,32 @@ class DelayedGetStateSessionManager extends MockSessionManager {
   }
 }
 
+class DeferredGetStateSessionManager extends MockSessionManager {
+  readonly readStarted = createDeferred<void>()
+  readonly releaseRead = createDeferred<void>()
+
+  async getState(instanceId: string): Promise<SessionState> {
+    this.readStarted.resolve(undefined)
+    await this.releaseRead.promise
+    return super.getState(instanceId)
+  }
+}
+
 class FailingCloseTransportSessionManager extends MockSessionManager {
+  closeCalls = 0
+
   async closeTransport(_instanceId: string): Promise<SessionState> {
+    this.closeCalls += 1
     throw new Error('close transport failed')
+  }
+}
+
+class HangingCloseTransportSessionManager extends MockSessionManager {
+  closeCalls = 0
+
+  async closeTransport(_instanceId: string): Promise<SessionState> {
+    this.closeCalls += 1
+    return new Promise<SessionState>(() => undefined)
   }
 }
 
@@ -159,6 +238,21 @@ class FlakyCloseTransportSessionManager extends MockSessionManager {
   }
 }
 
+class CloseThenFailOnceSessionManager extends MockSessionManager {
+  readonly firstCloseFailed = createDeferred<void>()
+  readonly closeCalls: string[] = []
+
+  async closeTransport(instanceId: string): Promise<SessionState> {
+    this.closeCalls.push(instanceId)
+    const state = await super.closeTransport(instanceId)
+    if (this.closeCalls.length === 1) {
+      this.firstCloseFailed.resolve(undefined)
+      throw new Error('close confirmation failed after physical close')
+    }
+    return state
+  }
+}
+
 class EventDrivenSessionManager extends MockSessionManager {
   readonly connectCalls: string[] = []
 
@@ -198,9 +292,9 @@ class DelayedEventDrivenSessionManager extends EventDrivenSessionManager {
 class FailingConnectedStatusRepository extends InMemoryWaAccountStatusRepository {
   failConnected = false
 
-  async markConnected(instanceId: string, workerId: string): Promise<void> {
+  async markConnected(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
     if (this.failConnected) throw new Error('status store unavailable')
-    return super.markConnected(instanceId, workerId)
+    return super.markConnected(instanceId, workerId, epoch)
   }
 }
 
@@ -208,10 +302,86 @@ class DeferredDisconnectedStatusRepository extends InMemoryWaAccountStatusReposi
   readonly writeStarted = createDeferred<void>()
   readonly releaseWrite = createDeferred<void>()
 
-  async markDisconnected(instanceId: string, workerId: string, reason?: string): Promise<void> {
+  async markDisconnected(
+    instanceId: string,
+    workerId: string,
+    reason: string | undefined,
+    epoch: bigint,
+  ): Promise<boolean> {
     this.writeStarted.resolve(undefined)
     await this.releaseWrite.promise
-    return super.markDisconnected(instanceId, workerId, reason)
+    return super.markDisconnected(instanceId, workerId, reason, epoch)
+  }
+}
+
+class DeferredConnectedStatusRepository extends InMemoryWaAccountStatusRepository {
+  readonly writeStarted = createDeferred<void>()
+  readonly releaseWrite = createDeferred<void>()
+
+  async markConnected(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    this.writeStarted.resolve(undefined)
+    await this.releaseWrite.promise
+    return super.markConnected(instanceId, workerId, epoch)
+  }
+}
+
+class RacingOwnershipStatusRepository extends InMemoryWaAccountStatusRepository {
+  private raced = false
+
+  async activateOwnership(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    if (!this.raced) {
+      this.raced = true
+      await super.activateOwnership(instanceId, 'worker-racer', epoch + 1n)
+      return false
+    }
+    return super.activateOwnership(instanceId, workerId, epoch)
+  }
+}
+
+class AlwaysRacingOwnershipStatusRepository extends InMemoryWaAccountStatusRepository {
+  async activateOwnership(instanceId: string, _workerId: string, epoch: bigint): Promise<boolean> {
+    await super.activateOwnership(instanceId, 'worker-racer', epoch + 1n)
+    return false
+  }
+}
+
+class FailOnceDisconnectedStatusRepository extends InMemoryWaAccountStatusRepository {
+  private fail = true
+
+  async markDisconnected(
+    instanceId: string,
+    workerId: string,
+    reason: string | undefined,
+    epoch: bigint,
+  ): Promise<boolean> {
+    if (this.fail) {
+      this.fail = false
+      throw new Error('status stop failed')
+    }
+    return super.markDisconnected(instanceId, workerId, reason, epoch)
+  }
+}
+
+class ThrowingClearQrRepository extends InMemoryWaQrBootstrapRepository {
+  clearCalls = 0
+
+  async clear(_instanceId: string, _workerId: string, _epoch: bigint): Promise<boolean> {
+    this.clearCalls += 1
+    throw new Error('qr clear failed')
+  }
+}
+
+class DeferredQrStoreRepository extends InMemoryWaQrBootstrapRepository {
+  readonly writeStarted = createDeferred<void>()
+  readonly releaseWrite = createDeferred<void>()
+  blockWorkerId?: string
+
+  async store(event: WaQrPendingEvent, workerId: string, epoch: bigint): Promise<boolean> {
+    if (workerId === this.blockWorkerId) {
+      this.writeStarted.resolve(undefined)
+      await this.releaseWrite.promise
+    }
+    return super.store(event, workerId, epoch)
   }
 }
 
@@ -405,6 +575,55 @@ describe('WaSessionLifecycleService', () => {
     await expect(registry.getOwner('instance-start-rollback-retry')).resolves.toBeNull()
   })
 
+  it('always removes failed-start supervision and releases its fence when QR cleanup throws', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new FailingConnectedStatusRepository()
+    const qrBootstrap = new ThrowingClearQrRepository()
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-a',
+      registry,
+      sessions,
+      ttlMs,
+      statuses,
+      qrBootstrap,
+    )
+
+    await expect(lifecycle.start('instance-rollback-qr-failure')).rejects.toThrow('qr clear failed')
+
+    expect(qrBootstrap.clearCalls).toBe(2)
+    expect(registry.releases).toContainEqual({
+      instanceId: 'instance-rollback-qr-failure',
+      workerId: 'worker-a',
+    })
+    await expect(registry.getOwner('instance-rollback-qr-failure')).resolves.toBeNull()
+    await expect(lifecycle.stop('instance-rollback-qr-failure')).resolves.toBe(false)
+  })
+
+  it('rejects a connect that crosses an ABA ownership epoch and closes the opened transport', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new DeferredConnectSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    const close = vi.spyOn(sessions, 'closeTransport')
+
+    const start = lifecycle.start('instance-connect-aba')
+    await sessions.connectStarted.promise
+    expect(registry.advanceEpoch('instance-connect-aba', 'worker-a')).toBe(2n)
+    sessions.releaseConnect.resolve(undefined)
+
+    await expect(start).rejects.toBeInstanceOf(WaOwnershipError)
+    expect(close).toHaveBeenCalled()
+    await expect(registry.getOwnership('instance-connect-aba')).resolves.toEqual({
+      owner: 'worker-a',
+      epoch: 2n,
+    })
+    expect(statuses.getLast('instance-connect-aba')).toMatchObject({
+      status: 'connecting',
+      epoch: 1n,
+    })
+  })
+
   it('queues a new start behind an in-progress stop and opens one fresh transport', async () => {
     const registry = new FakeOwnerRegistry()
     const sessions = new DelayedCloseTransportSessionManager(30)
@@ -452,6 +671,158 @@ describe('WaSessionLifecycleService', () => {
 
     expect(statuses.getLast('instance-await-open')).toMatchObject({ status: 'connected' })
     await lifecycle.stop('instance-await-open')
+  })
+
+  it('persists an observed connected state immediately without waiting for the watchdog', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new EventDrivenSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    await lifecycle.start('instance-observed-open')
+    statuses.clear()
+    const state: SessionState = {
+      instanceId: 'instance-observed-open',
+      status: 'connected',
+      hasAuthState: true,
+      logoutCount: 0,
+    }
+    sessions.seed(state)
+
+    lifecycle.notifyState(state.instanceId)
+    await waitUntil(() => statuses.getLast('instance-observed-open')?.status === 'connected')
+
+    expect(statuses.getHistory('instance-observed-open')).toEqual([
+      expect.objectContaining({ status: 'connected', workerId: 'worker-a' }),
+    ])
+    await lifecycle.stop('instance-observed-open')
+  })
+
+  it('clears a pending QR when an observed connection opens', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new EventDrivenSessionManager()
+    const qr = new InMemoryWaQrBootstrapRepository()
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-a',
+      registry,
+      sessions,
+      ttlMs,
+      undefined,
+      qr,
+    )
+    await lifecycle.start('instance-observed-qr-clear')
+    await lifecycle.recordQrPending(
+      'instance-observed-qr-clear',
+      'qr-payload',
+      new Date('2999-07-15T12:00:00.000Z'),
+    )
+    const state: SessionState = {
+      instanceId: 'instance-observed-qr-clear',
+      status: 'connected',
+      hasAuthState: true,
+      logoutCount: 0,
+    }
+    sessions.seed(state)
+
+    lifecycle.notifyState(state.instanceId)
+    await waitUntil(async () => (await qr.getLatest('instance-observed-qr-clear')) === null)
+
+    await expect(qr.getLatest('instance-observed-qr-clear')).resolves.toBeNull()
+    await lifecycle.stop('instance-observed-qr-clear')
+  })
+
+  it('serializes an observed status write before stop closes and marks disconnected', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new EventDrivenSessionManager()
+    const statuses = new DeferredConnectedStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    await lifecycle.start('instance-observe-stop-race')
+    const state: SessionState = {
+      instanceId: 'instance-observe-stop-race',
+      status: 'connected',
+      hasAuthState: true,
+      logoutCount: 0,
+    }
+    sessions.seed(state)
+    lifecycle.notifyState(state.instanceId)
+    await statuses.writeStarted.promise
+    const close = vi.spyOn(sessions, 'closeTransport')
+
+    const stop = lifecycle.stop('instance-observe-stop-race')
+    await delay(5)
+    expect(close).not.toHaveBeenCalled()
+    statuses.releaseWrite.resolve(undefined)
+    await expect(stop).resolves.toBe(true)
+
+    expect(statuses.getLast('instance-observe-stop-race')).toMatchObject({
+      status: 'disconnected',
+    })
+  })
+
+  it('starts one serialized reconnect immediately for an observed transient disconnect', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new DelayedEventDrivenSessionManager(20)
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    await lifecycle.start('instance-observed-transient')
+    const state: SessionState = {
+      instanceId: 'instance-observed-transient',
+      status: 'disconnected',
+      hasAuthState: true,
+      logoutCount: 0,
+      lastDisconnectReason: 'transient',
+    }
+    sessions.seed(state)
+    const logout = vi.spyOn(sessions, 'logout')
+
+    lifecycle.notifyState(state.instanceId)
+    lifecycle.notifyState(state.instanceId)
+    await waitUntil(() => sessions.connectCalls.length === 2)
+
+    expect(sessions.connectCalls).toEqual([
+      'instance-observed-transient',
+      'instance-observed-transient',
+    ])
+    expect(sessions.maxConcurrentConnects).toBe(1)
+    expect(logout).not.toHaveBeenCalled()
+    await lifecycle.stop('instance-observed-transient')
+  })
+
+  it('ignores an observed state after ownership moved to another worker', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new EventDrivenSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    await lifecycle.start('instance-observed-stale')
+    statuses.clear()
+    registry.clearRenewals()
+    registry.setOwner('instance-observed-stale', 'worker-b')
+
+    lifecycle.notifyState('instance-observed-stale')
+    await waitUntil(() => registry.renewals.length > 0)
+
+    expect(statuses.getHistory('instance-observed-stale')).toEqual([])
+    await expect(registry.getOwner('instance-observed-stale')).resolves.toBe('worker-b')
+  })
+
+  it('persists an observed logged_out state and releases ownership immediately', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new EventDrivenSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    await lifecycle.start('instance-observed-logout')
+    const state: SessionState = {
+      instanceId: 'instance-observed-logout',
+      status: 'logged_out',
+      hasAuthState: false,
+      logoutCount: 1,
+      lastDisconnectReason: 'logged_out',
+    }
+    sessions.seed(state)
+
+    lifecycle.notifyState(state.instanceId)
+    await waitUntil(() => statuses.getLast('instance-observed-logout')?.status === 'logged_out')
+
+    expect(statuses.getLast('instance-observed-logout')).toMatchObject({ status: 'logged_out' })
+    await expect(registry.getOwner('instance-observed-logout')).resolves.toBeNull()
   })
 
   it('reconnects a transiently disconnected owned session from one serialized watchdog', async () => {
@@ -547,6 +918,147 @@ describe('WaSessionLifecycleService', () => {
     expect(statuses.getHistory('instance-stale-status')).toEqual([])
   })
 
+  it('rechecks ownership after a slow state read before shared persistence', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new DeferredGetStateSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const qr = new InMemoryWaQrBootstrapRepository()
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-a',
+      registry,
+      sessions,
+      ttlMs,
+      statuses,
+      qr,
+    )
+    await lifecycle.start('instance-slow-stale')
+    statuses.clear()
+    await lifecycle.recordQrPending(
+      'instance-slow-stale',
+      'qr-payload',
+      new Date('2999-07-15T12:00:00.000Z'),
+    )
+    statuses.clear()
+    const close = vi.spyOn(sessions, 'closeTransport')
+
+    lifecycle.notifyState('instance-slow-stale')
+    await sessions.readStarted.promise
+    registry.setOwner('instance-slow-stale', 'worker-b')
+    sessions.releaseRead.resolve(undefined)
+    await waitUntil(() => close.mock.calls.length === 1)
+
+    expect(statuses.getHistory('instance-slow-stale')).toEqual([])
+    await expect(qr.getLatest('instance-slow-stale')).resolves.toMatchObject({
+      qrCode: 'qr-payload',
+    })
+  })
+
+  it('rejects an old status commit that resumes after a newer ownership fence wins', async () => {
+    const registry = new FakeOwnerRegistry()
+    const statuses = new DeferredDisconnectedStatusRepository()
+    const oldSessions = new MockSessionManager()
+    const newSessions = new MockSessionManager()
+    const oldClose = vi.spyOn(oldSessions, 'closeTransport')
+    const oldLifecycle = new WaSessionLifecycleService(
+      'worker-old',
+      registry,
+      oldSessions,
+      ttlMs,
+      statuses,
+    )
+    const newLifecycle = new WaSessionLifecycleService(
+      'worker-new',
+      registry,
+      newSessions,
+      ttlMs,
+      statuses,
+    )
+    await oldLifecycle.start('instance-status-commit-race')
+    await oldSessions.handleDisconnect('instance-status-commit-race', 'transient')
+    oldLifecycle.notifyState('instance-status-commit-race')
+    await statuses.writeStarted.promise
+
+    registry.setOwner('instance-status-commit-race', 'worker-new')
+    await newLifecycle.start('instance-status-commit-race')
+    statuses.releaseWrite.resolve(undefined)
+    await waitUntil(
+      () => statuses.getLast('instance-status-commit-race')?.workerId === 'worker-new',
+    )
+    await waitUntil(() => oldClose.mock.calls.length === 1)
+
+    expect(statuses.getLast('instance-status-commit-race')).toMatchObject({
+      workerId: 'worker-new',
+      epoch: 2n,
+      status: 'connected',
+    })
+    await newLifecycle.stop('instance-status-commit-race')
+  })
+
+  it('rejects an old QR commit that resumes after a newer ownership fence wins', async () => {
+    const registry = new FakeOwnerRegistry()
+    const qr = new DeferredQrStoreRepository()
+    const oldLifecycle = new WaSessionLifecycleService(
+      'worker-old',
+      registry,
+      new MockSessionManager(),
+      ttlMs,
+      new InMemoryWaAccountStatusRepository(),
+      qr,
+    )
+    const newLifecycle = new WaSessionLifecycleService(
+      'worker-new',
+      registry,
+      new MockSessionManager(),
+      ttlMs,
+      new InMemoryWaAccountStatusRepository(),
+      qr,
+    )
+    await oldLifecycle.start('instance-qr-commit-race')
+    qr.blockWorkerId = 'worker-old'
+    const oldWrite = oldLifecycle.recordQrPending(
+      'instance-qr-commit-race',
+      'stale-qr',
+      new Date('2999-07-15T12:00:00.000Z'),
+    )
+    await qr.writeStarted.promise
+
+    registry.setOwner('instance-qr-commit-race', 'worker-new')
+    await newLifecycle.start('instance-qr-commit-race')
+    await newLifecycle.recordQrPending(
+      'instance-qr-commit-race',
+      'fresh-qr',
+      new Date('2999-07-15T12:00:00.000Z'),
+    )
+    qr.releaseWrite.resolve(undefined)
+
+    await expect(oldWrite).rejects.toBeInstanceOf(WaOwnershipError)
+    await expect(qr.getLatest('instance-qr-commit-race')).resolves.toMatchObject({
+      qrCode: 'fresh-qr',
+    })
+    await newLifecycle.stop('instance-qr-commit-race')
+  })
+
+  it('rejects a repeated start when ownership changes during its state read', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new DeferredGetStateSessionManager()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    await lifecycle.start('instance-repeat-stale')
+    const close = vi.spyOn(sessions, 'closeTransport')
+
+    const repeatedStart = lifecycle.start('instance-repeat-stale')
+    await sessions.readStarted.promise
+    registry.setOwner('instance-repeat-stale', 'worker-b')
+    sessions.releaseRead.resolve(undefined)
+
+    await expect(repeatedStart).rejects.toMatchObject({
+      instanceId: 'instance-repeat-stale',
+      workerId: 'worker-a',
+      owner: 'worker-b',
+    })
+    await waitUntil(() => close.mock.calls.length === 1)
+    await expect(registry.getOwner('instance-repeat-stale')).resolves.toBe('worker-b')
+  })
+
   it('closes fail-closed when lease renewal throws instead of keeping an uncertain socket', async () => {
     const registry = new FailingRenewOwnerRegistry()
     const sessions = new MockSessionManager()
@@ -577,6 +1089,47 @@ describe('WaSessionLifecycleService', () => {
       'instance-owner-lost-close-retry',
     ])
     await expect(registry.getOwner('instance-owner-lost-close-retry')).resolves.toBe('worker-b')
+  })
+
+  it('waits for the old ownership-loss shutdown before reclaiming and connecting a new epoch', async () => {
+    vi.useFakeTimers()
+    try {
+      const registry = new FakeOwnerRegistry()
+      const sessions = new CloseThenFailOnceSessionManager()
+      const statuses = new InMemoryWaAccountStatusRepository()
+      const lifecycle = new WaSessionLifecycleService(
+        'worker-a',
+        registry,
+        sessions,
+        shortTtlMs,
+        statuses,
+      )
+      const connect = vi.spyOn(sessions, 'connect')
+      await lifecycle.start('instance-same-process-reclaim')
+      registry.setOwner('instance-same-process-reclaim', 'worker-b')
+
+      await vi.advanceTimersByTimeAsync(5)
+      await sessions.firstCloseFailed.promise
+      registry.expireOwner('instance-same-process-reclaim')
+      const restart = lifecycle.start('instance-same-process-reclaim')
+      await Promise.resolve()
+
+      expect(registry.claims).toHaveLength(1)
+      expect(connect).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(10)
+      await expect(restart).resolves.toMatchObject({ status: 'connected' })
+      expect(registry.claims).toHaveLength(2)
+      expect(connect).toHaveBeenCalledTimes(2)
+      expect(statuses.getLast('instance-same-process-reclaim')).toMatchObject({
+        workerId: 'worker-a',
+        epoch: 3n,
+        status: 'connected',
+      })
+      await lifecycle.stop('instance-same-process-reclaim')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('persists terminal logged_out and releases supervision ownership', async () => {
@@ -714,10 +1267,7 @@ describe('WaSessionLifecycleService', () => {
     await expect(ownerLifecycle.renew('instance-4')).resolves.toBe(true)
     await expect(foreignLifecycle.renew('instance-4')).resolves.toBe(false)
 
-    expect(registry.renewals).toEqual([
-      { instanceId: 'instance-4', workerId: 'worker-a', ttlMs },
-      { instanceId: 'instance-4', workerId: 'worker-b', ttlMs },
-    ])
+    expect(registry.renewals).toEqual([{ instanceId: 'instance-4', workerId: 'worker-a', ttlMs }])
     await expect(registry.getOwner('instance-4')).resolves.toBe('worker-a')
   })
 
@@ -901,6 +1451,167 @@ describe('WaSessionLifecycleService', () => {
     await expect(registry.getOwner('instance-5')).resolves.toBeNull()
   })
 
+  it('does not persist or release a close that crosses an ABA ownership epoch', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new DeferredCloseTransportSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    await lifecycle.start('instance-close-aba')
+
+    const stop = lifecycle.stop('instance-close-aba')
+    await sessions.closeStarted.promise
+    expect(registry.advanceEpoch('instance-close-aba', 'worker-a')).toBe(2n)
+    sessions.releaseClose.resolve(undefined)
+
+    await expect(stop).resolves.toBe(false)
+    await expect(registry.getOwnership('instance-close-aba')).resolves.toEqual({
+      owner: 'worker-a',
+      epoch: 2n,
+    })
+    expect(statuses.getLast('instance-close-aba')).toMatchObject({ status: 'connected', epoch: 1n })
+  })
+
+  it('re-arms supervision when stop persistence fails so a later stop can finish', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new FailOnceDisconnectedStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    await lifecycle.start('instance-stop-persistence-retry')
+
+    await expect(lifecycle.stop('instance-stop-persistence-retry')).rejects.toThrow(
+      'status stop failed',
+    )
+    await expect(registry.getOwner('instance-stop-persistence-retry')).resolves.toBe('worker-a')
+
+    await expect(lifecycle.stop('instance-stop-persistence-retry')).resolves.toBe(true)
+    await expect(registry.getOwner('instance-stop-persistence-retry')).resolves.toBeNull()
+  })
+
+  it('shuts down every active transport and rejects new starts', async () => {
+    const { lifecycle, registry, sessions } = createHarness('worker-a')
+    const close = vi.spyOn(sessions, 'closeTransport')
+    await lifecycle.start('instance-shutdown-a')
+    await lifecycle.start('instance-shutdown-b')
+
+    await lifecycle.shutdownAll()
+
+    expect(close.mock.calls.map(([instanceId]) => instanceId).sort()).toEqual([
+      'instance-shutdown-a',
+      'instance-shutdown-b',
+    ])
+    await expect(registry.getOwner('instance-shutdown-a')).resolves.toBeNull()
+    await expect(registry.getOwner('instance-shutdown-b')).resolves.toBeNull()
+    await expect(lifecycle.start('instance-after-shutdown')).rejects.toThrow(
+      'WA session lifecycle is shutting down',
+    )
+  })
+
+  it('waits for a pending start already chained into stop before shutdown resolves', async () => {
+    const registry = new DeferredClaimOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    const connect = vi.spyOn(sessions, 'connect')
+
+    const start = lifecycle.start('instance-pending-shutdown')
+    await registry.claimStarted.promise
+    const stop = lifecycle.stop('instance-pending-shutdown')
+    let shutdownResolved = false
+    const shutdown = lifecycle.shutdownAll().then(() => {
+      shutdownResolved = true
+    })
+    await delay(5)
+
+    expect(shutdownResolved).toBe(false)
+    registry.releaseClaim.resolve(undefined)
+
+    await expect(start).rejects.toThrow('WA session lifecycle is shutting down')
+    await expect(stop).resolves.toBe(false)
+    await expect(shutdown).resolves.toBeUndefined()
+    expect(connect).not.toHaveBeenCalled()
+    await expect(registry.getOwner('instance-pending-shutdown')).resolves.toBeNull()
+  })
+
+  it('waits for ownership-loss physical close before shutdown resolves', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new DeferredCloseTransportSessionManager()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, shortTtlMs)
+    await lifecycle.start('instance-loss-during-shutdown')
+    registry.setOwner('instance-loss-during-shutdown', 'worker-b')
+    await sessions.closeStarted.promise
+    let shutdownResolved = false
+
+    const shutdown = lifecycle.shutdownAll().then(() => {
+      shutdownResolved = true
+    })
+    await delay(10)
+    expect(shutdownResolved).toBe(false)
+    sessions.releaseClose.resolve(undefined)
+    await shutdown
+
+    expect(shutdownResolved).toBe(true)
+  })
+
+  it('bounds application shutdown close retries and keeps the lease when close never succeeds', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new FailingCloseTransportSessionManager()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+    await lifecycle.start('instance-bounded-shutdown')
+
+    await expect(lifecycle.shutdownAll()).rejects.toThrow('close transport failed')
+
+    expect(sessions.closeCalls).toBe(3)
+    await expect(registry.getOwner('instance-bounded-shutdown')).resolves.toBe('worker-a')
+    await expect(lifecycle.start('instance-after-failed-shutdown')).rejects.toThrow(
+      'WA session lifecycle is shutting down',
+    )
+  })
+
+  it('terminates application shutdown when transport close never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const registry = new FakeOwnerRegistry()
+      const sessions = new HangingCloseTransportSessionManager()
+      const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs)
+      await lifecycle.start('instance-hanging-shutdown')
+
+      const shutdown = lifecycle.shutdownAll()
+      const rejected = expect(shutdown).rejects.toThrow(
+        'WA transport close timed out during shutdown',
+      )
+      await vi.advanceTimersByTimeAsync(4_000)
+
+      await rejected
+      expect(sessions.closeCalls).toBe(3)
+      await expect(registry.getOwner('instance-hanging-shutdown')).resolves.toBe('worker-a')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('continues shutdown cleanup and releases ownership after status persistence fails', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new FailOnceDisconnectedStatusRepository()
+    const qrBootstrap = new InMemoryWaQrBootstrapRepository()
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-a',
+      registry,
+      sessions,
+      ttlMs,
+      statuses,
+      qrBootstrap,
+    )
+    await lifecycle.start('instance-shutdown-status-failure')
+
+    await expect(lifecycle.shutdownAll()).rejects.toThrow('status stop failed')
+
+    await expect(registry.getOwner('instance-shutdown-status-failure')).resolves.toBeNull()
+    expect(registry.releases).toContainEqual({
+      instanceId: 'instance-shutdown-status-failure',
+      workerId: 'worker-a',
+    })
+  })
+
   it('keeps ownership when stop cannot close transport', async () => {
     const registry = new FakeOwnerRegistry()
     const sessions = new FailingCloseTransportSessionManager()
@@ -921,13 +1632,114 @@ describe('WaSessionLifecycleService', () => {
     await lifecycle.start('instance-6')
     const state = await lifecycle.start('instance-6')
 
-    expect(registry.claims).toEqual([
-      { instanceId: 'instance-6', workerId: 'worker-a', ttlMs },
-      { instanceId: 'instance-6', workerId: 'worker-a', ttlMs },
-    ])
+    expect(registry.claims).toEqual([{ instanceId: 'instance-6', workerId: 'worker-a', ttlMs }])
     expect(connect).toHaveBeenCalledOnce()
     expect(state.status).toBe('connected')
     await expect(registry.getOwner('instance-6')).resolves.toBe('worker-a')
+  })
+
+  it('closes an expired active epoch before the same worker claims a fresh epoch', async () => {
+    const { lifecycle, registry, sessions, statuses } = createHarness('worker-a')
+    const close = vi.spyOn(sessions, 'closeTransport')
+    const connect = vi.spyOn(sessions, 'connect')
+    await lifecycle.start('instance-reclaim')
+    registry.expireOwner('instance-reclaim')
+
+    await lifecycle.start('instance-reclaim')
+
+    expect(close).toHaveBeenCalledOnce()
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(statuses.getLast('instance-reclaim')).toMatchObject({ epoch: 2n, workerId: 'worker-a' })
+    await lifecycle.stop('instance-reclaim')
+  })
+
+  it('closes fail-closed when repeated start cannot verify the active epoch', async () => {
+    const registry = new FailingRenewOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-a',
+      registry,
+      sessions,
+      ttlMs,
+      new InMemoryWaAccountStatusRepository(),
+    )
+    const close = vi.spyOn(sessions, 'closeTransport')
+    await lifecycle.start('instance-reclaim-renew-error')
+    registry.failRenewals = true
+
+    await expect(lifecycle.start('instance-reclaim-renew-error')).rejects.toThrow(
+      'redis unavailable',
+    )
+
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('claims above the persistence fence after Redis ownership state is reset', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new InMemoryWaAccountStatusRepository()
+    await statuses.activateOwnership('instance-reset-counter', 'worker-previous', 9n)
+    const lifecycle = new WaSessionLifecycleService(
+      'worker-new',
+      registry,
+      sessions,
+      ttlMs,
+      statuses,
+    )
+    const connect = vi.spyOn(sessions, 'connect')
+
+    await expect(lifecycle.start('instance-reset-counter')).resolves.toMatchObject({
+      status: 'connected',
+    })
+
+    expect(connect).toHaveBeenCalledOnce()
+    await expect(registry.getOwnership('instance-reset-counter')).resolves.toEqual({
+      owner: 'worker-new',
+      epoch: 10n,
+    })
+    expect(statuses.getLast('instance-reset-counter')).toMatchObject({
+      workerId: 'worker-new',
+      epoch: 10n,
+      status: 'connected',
+    })
+    await lifecycle.stop('instance-reset-counter')
+  })
+
+  it('reclaims with a bounded retry when persistence advances during fence activation', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new RacingOwnershipStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    const connect = vi.spyOn(sessions, 'connect')
+
+    await expect(lifecycle.start('instance-fence-activation-race')).resolves.toMatchObject({
+      status: 'connected',
+    })
+
+    expect(registry.claims).toHaveLength(2)
+    expect(connect).toHaveBeenCalledOnce()
+    await expect(registry.getOwnership('instance-fence-activation-race')).resolves.toEqual({
+      owner: 'worker-a',
+      epoch: 3n,
+    })
+    expect(statuses.getLast('instance-fence-activation-race')).toMatchObject({ epoch: 3n })
+    await lifecycle.stop('instance-fence-activation-race')
+  })
+
+  it('fails closed after the bounded activation retries are exhausted', async () => {
+    const registry = new FakeOwnerRegistry()
+    const sessions = new MockSessionManager()
+    const statuses = new AlwaysRacingOwnershipStatusRepository()
+    const lifecycle = new WaSessionLifecycleService('worker-a', registry, sessions, ttlMs, statuses)
+    const connect = vi.spyOn(sessions, 'connect')
+
+    await expect(lifecycle.start('instance-fence-always-racing')).rejects.toBeInstanceOf(
+      WaOwnershipError,
+    )
+
+    expect(registry.claims).toHaveLength(3)
+    expect(connect).not.toHaveBeenCalled()
+    await expect(registry.getOwner('instance-fence-always-racing')).resolves.toBeNull()
   })
 })
 
@@ -962,9 +1774,12 @@ function createDeferred<T>(): {
   return { promise, resolve }
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+async function waitUntil(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 500,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() >= deadline) throw new Error('Timed out waiting for test condition')
     await delay(5)
   }

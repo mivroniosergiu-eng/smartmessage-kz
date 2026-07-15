@@ -16,19 +16,28 @@ export class WaLifecycleCommandQueueService {
   ) {}
 
   async enqueueStart(instanceId: string): Promise<unknown> {
-    const target = await this.commandGuard.assertCommandableInstance(instanceId, START_WA_INSTANCE_JOB_NAME)
+    const target = await this.commandGuard.assertCommandableInstance(
+      instanceId,
+      START_WA_INSTANCE_JOB_NAME,
+    )
 
     return this.queueService.enqueueStart(target.instanceId)
   }
 
   async enqueueStop(instanceId: string): Promise<unknown> {
-    const target = await this.commandGuard.assertCommandableInstance(instanceId, STOP_WA_INSTANCE_JOB_NAME)
+    const target = await this.commandGuard.assertCommandableInstance(
+      instanceId,
+      STOP_WA_INSTANCE_JOB_NAME,
+    )
 
     return this.queueService.enqueueStop(target.instanceId)
   }
 
   async enqueueRenew(instanceId: string): Promise<unknown> {
-    const target = await this.commandGuard.assertCommandableInstance(instanceId, RENEW_WA_INSTANCE_JOB_NAME)
+    const target = await this.commandGuard.assertCommandableInstance(
+      instanceId,
+      RENEW_WA_INSTANCE_JOB_NAME,
+    )
 
     return this.queueService.enqueueRenew(target.instanceId)
   }

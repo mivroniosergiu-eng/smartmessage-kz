@@ -100,15 +100,36 @@ describe('WA QR bootstrap contract', () => {
     ).toEqual({ instanceId: 'instance-1', status: 'connected' })
   })
 
-  it.each(['restricted', 'banned'] as const)('preserves terminal and limited account status %s', (accountStatus) => {
+  it('never lets an unexpired stale QR override a settled account status', () => {
+    const staleEvent = createWaQrPendingEvent({
+      instanceId: 'instance-1',
+      qrCode: 'stale-qr',
+      createdAt: new Date('2026-07-03T10:00:00.000Z'),
+      expiresAt: new Date('2026-07-03T10:01:00.000Z'),
+    })
+
     expect(
       resolveWaQrBootstrapState({
         instanceId: 'instance-1',
-        accountStatus,
+        accountStatus: 'connected',
+        qrEvent: staleEvent,
         now: new Date('2026-07-03T10:00:30.000Z'),
       }),
-    ).toEqual({ instanceId: 'instance-1', status: accountStatus })
+    ).toEqual({ instanceId: 'instance-1', status: 'connected' })
   })
+
+  it.each(['restricted', 'banned'] as const)(
+    'preserves terminal and limited account status %s',
+    (accountStatus) => {
+      expect(
+        resolveWaQrBootstrapState({
+          instanceId: 'instance-1',
+          accountStatus,
+          now: new Date('2026-07-03T10:00:30.000Z'),
+        }),
+      ).toEqual({ instanceId: 'instance-1', status: accountStatus })
+    },
+  )
 })
 
 describe('InMemoryWaQrBootstrapRepository', () => {
@@ -121,12 +142,36 @@ describe('InMemoryWaQrBootstrapRepository', () => {
       expiresAt: new Date('2026-07-03T10:01:00.000Z'),
     })
 
-    await repository.store(event)
+    await repository.activateOwnership('instance-1', 'worker-a', 1n)
+    await repository.store(event, 'worker-a', 1n)
     const stored = await repository.getLatest('instance-1')
     expect(stored).toEqual(event)
     expect(stored).not.toBe(event)
 
-    await repository.clear('instance-1')
+    await repository.clear('instance-1', 'worker-a', 1n)
     await expect(repository.getLatest('instance-1')).resolves.toBeNull()
+  })
+
+  it('does not let a stale owner store or clear after a newer epoch wins', async () => {
+    const repository = new InMemoryWaQrBootstrapRepository()
+    const oldEvent = createWaQrPendingEvent({
+      instanceId: 'instance-fenced',
+      qrCode: 'old-qr',
+      expiresAt: new Date('2999-01-01T00:01:00.000Z'),
+    })
+    const newEvent = createWaQrPendingEvent({
+      instanceId: 'instance-fenced',
+      qrCode: 'new-qr',
+      expiresAt: new Date('2999-01-01T00:01:00.000Z'),
+    })
+    await repository.activateOwnership('instance-fenced', 'worker-a', 1n)
+    await repository.activateOwnership('instance-fenced', 'worker-b', 2n)
+    await repository.store(newEvent, 'worker-b', 2n)
+
+    await expect(repository.store(oldEvent, 'worker-a', 1n)).resolves.toBe(false)
+    await expect(repository.clear('instance-fenced', 'worker-a', 1n)).resolves.toBe(false)
+    await expect(repository.getLatest('instance-fenced')).resolves.toMatchObject({
+      qrCode: 'new-qr',
+    })
   })
 })

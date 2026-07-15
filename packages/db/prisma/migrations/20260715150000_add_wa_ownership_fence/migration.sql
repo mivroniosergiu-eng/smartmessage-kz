@@ -1,0 +1,6 @@
+ALTER TABLE "WaAccount"
+ADD COLUMN "ownerWorkerId" TEXT,
+ADD COLUMN "ownershipEpoch" BIGINT NOT NULL DEFAULT 0;
+
+ALTER TABLE "WaQrBootstrapEvent"
+ADD COLUMN "ownershipEpoch" BIGINT NOT NULL DEFAULT 0;

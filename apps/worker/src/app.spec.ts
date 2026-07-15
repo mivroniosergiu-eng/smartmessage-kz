@@ -46,7 +46,9 @@ describe('worker', () => {
   })
 })
 
-function createAppTestingModule(): ReturnType<ReturnType<typeof Test.createTestingModule>['compile']> {
+function createAppTestingModule(): ReturnType<
+  ReturnType<typeof Test.createTestingModule>['compile']
+> {
   return Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(WA_REDIS_CONNECTION)
     .useValue(createFakeRedisConnection())
@@ -55,7 +57,7 @@ function createAppTestingModule(): ReturnType<ReturnType<typeof Test.createTesti
 
 function createFakeRedisConnection(): unknown {
   return {
-    eval: async () => [1, 'worker-test'],
+    eval: async () => 1,
     get: async () => null,
     quit: async () => 'OK',
   }

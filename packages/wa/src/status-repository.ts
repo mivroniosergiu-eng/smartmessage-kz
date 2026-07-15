@@ -1,14 +1,10 @@
 export type WaAccountRuntimeStatus =
-  | 'connecting'
-  | 'connected'
-  | 'disconnected'
-  | 'logged_out'
-  | 'restricted'
-  | 'banned'
+  'connecting' | 'connected' | 'disconnected' | 'logged_out' | 'restricted' | 'banned'
 
 export interface WaAccountStatusRecord {
   instanceId: string
   workerId: string
+  epoch: bigint
   status: WaAccountRuntimeStatus
   recordedAt: Date
   reason?: string
@@ -16,40 +12,89 @@ export interface WaAccountStatusRecord {
 }
 
 export interface WaAccountStatusRepository {
-  markConnecting(instanceId: string, workerId: string): Promise<void>
-  markConnected(instanceId: string, workerId: string): Promise<void>
-  markDisconnected(instanceId: string, workerId: string, reason?: string): Promise<void>
-  markLoggedOut(instanceId: string, workerId: string): Promise<void>
-  markRestricted(instanceId: string, workerId: string, restrictedUntil: Date): Promise<void>
-  markBanned(instanceId: string, workerId: string, reason?: string): Promise<void>
+  getOwnershipEpoch(instanceId: string): Promise<bigint>
+  activateOwnership(instanceId: string, workerId: string, epoch: bigint): Promise<boolean>
+  markConnecting(instanceId: string, workerId: string, epoch: bigint): Promise<boolean>
+  markConnected(instanceId: string, workerId: string, epoch: bigint): Promise<boolean>
+  markDisconnected(
+    instanceId: string,
+    workerId: string,
+    reason: string | undefined,
+    epoch: bigint,
+  ): Promise<boolean>
+  markLoggedOut(instanceId: string, workerId: string, epoch: bigint): Promise<boolean>
+  markRestricted(
+    instanceId: string,
+    workerId: string,
+    restrictedUntil: Date,
+    epoch: bigint,
+  ): Promise<boolean>
+  markBanned(
+    instanceId: string,
+    workerId: string,
+    reason: string | undefined,
+    epoch: bigint,
+  ): Promise<boolean>
 }
 
 export class InMemoryWaAccountStatusRepository implements WaAccountStatusRepository {
   private readonly latest = new Map<string, WaAccountStatusRecord>()
   private readonly entries: WaAccountStatusRecord[] = []
+  private readonly fences = new Map<string, { workerId: string; epoch: bigint }>()
 
-  async markConnecting(instanceId: string, workerId: string): Promise<void> {
-    this.record({ instanceId, workerId, status: 'connecting' })
+  async getOwnershipEpoch(instanceId: string): Promise<bigint> {
+    return this.fences.get(instanceId)?.epoch ?? 0n
   }
 
-  async markConnected(instanceId: string, workerId: string): Promise<void> {
-    this.record({ instanceId, workerId, status: 'connected' })
+  async activateOwnership(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    const current = this.fences.get(instanceId)
+    if (
+      current &&
+      (current.epoch > epoch || (current.epoch === epoch && current.workerId !== workerId))
+    ) {
+      return false
+    }
+    this.fences.set(instanceId, { workerId, epoch })
+    return true
   }
 
-  async markDisconnected(instanceId: string, workerId: string, reason?: string): Promise<void> {
-    this.record({ instanceId, workerId, status: 'disconnected', reason })
+  async markConnecting(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    return this.record({ instanceId, workerId, epoch, status: 'connecting' })
   }
 
-  async markLoggedOut(instanceId: string, workerId: string): Promise<void> {
-    this.record({ instanceId, workerId, status: 'logged_out' })
+  async markConnected(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    return this.record({ instanceId, workerId, epoch, status: 'connected' })
   }
 
-  async markRestricted(instanceId: string, workerId: string, restrictedUntil: Date): Promise<void> {
-    this.record({ instanceId, workerId, status: 'restricted', restrictedUntil })
+  async markDisconnected(
+    instanceId: string,
+    workerId: string,
+    reason: string | undefined,
+    epoch: bigint,
+  ): Promise<boolean> {
+    return this.record({ instanceId, workerId, epoch, status: 'disconnected', reason })
   }
 
-  async markBanned(instanceId: string, workerId: string, reason?: string): Promise<void> {
-    this.record({ instanceId, workerId, status: 'banned', reason })
+  async markLoggedOut(instanceId: string, workerId: string, epoch: bigint): Promise<boolean> {
+    return this.record({ instanceId, workerId, epoch, status: 'logged_out' })
+  }
+
+  async markRestricted(
+    instanceId: string,
+    workerId: string,
+    restrictedUntil: Date,
+    epoch: bigint,
+  ): Promise<boolean> {
+    return this.record({ instanceId, workerId, epoch, status: 'restricted', restrictedUntil })
+  }
+
+  async markBanned(
+    instanceId: string,
+    workerId: string,
+    reason: string | undefined,
+    epoch: bigint,
+  ): Promise<boolean> {
+    return this.record({ instanceId, workerId, epoch, status: 'banned', reason })
   }
 
   getLast(instanceId: string): WaAccountStatusRecord | undefined {
@@ -59,7 +104,9 @@ export class InMemoryWaAccountStatusRepository implements WaAccountStatusReposit
   }
 
   getHistory(instanceId?: string): WaAccountStatusRecord[] {
-    const entries = instanceId ? this.entries.filter((entry) => entry.instanceId === instanceId) : this.entries
+    const entries = instanceId
+      ? this.entries.filter((entry) => entry.instanceId === instanceId)
+      : this.entries
 
     return entries.map(cloneRecord)
   }
@@ -69,7 +116,9 @@ export class InMemoryWaAccountStatusRepository implements WaAccountStatusReposit
     this.entries.splice(0)
   }
 
-  private record(input: Omit<WaAccountStatusRecord, 'recordedAt'>): void {
+  private record(input: Omit<WaAccountStatusRecord, 'recordedAt'>): boolean {
+    const fence = this.fences.get(input.instanceId)
+    if (!fence || fence.workerId !== input.workerId || fence.epoch !== input.epoch) return false
     const entry = cloneRecord({
       ...input,
       recordedAt: new Date(),
@@ -77,6 +126,7 @@ export class InMemoryWaAccountStatusRepository implements WaAccountStatusReposit
 
     this.latest.set(entry.instanceId, entry)
     this.entries.push(entry)
+    return true
   }
 }
 
