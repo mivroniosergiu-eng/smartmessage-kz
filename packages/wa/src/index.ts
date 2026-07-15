@@ -1,6 +1,7 @@
 export * from './sender'
 export * from './session'
 export * from './phone-validator'
+export * from './receiver'
 export * from './owner-registry'
 export * from './owned-session-manager'
 export * from './session-lifecycle'
