@@ -2,7 +2,7 @@
 
 - Исполнитель (агент/человек): Codex task-agent + независимый review-субагент
 - Ветка: `feat/phase-1-baileys-session-manager`
-- PR: будет добавлен после публикации ветки
+- PR: [#24](https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/24)
 
 ## Автотесты
 
