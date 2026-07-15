@@ -2,7 +2,7 @@
 
 - Исполнитель: Codex task-agent + три implementation/review-субагента
 - Ветка: `feat/phase-1-wa-runtime-wiring`
-- PR/CI: [PR #26](https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/26); initial `quality-gate` run [29411570078](https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29411570078) — passed; CodeRabbit — completed, 12 actionable threads обработаны follow-up diff.
+- PR/CI: [PR #26](https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/26); initial `quality-gate` run [29411570078](https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29411570078) — passed; final review-fix `quality-gate` run [29413023773](https://github.com/mivroniosergiu-eng/smartmessage-kz/actions/runs/29413023773) — passed; CodeRabbit повторно завершён со статусом pass, все 12 actionable threads исправлены и resolved.
 
 ## Автотесты
 
