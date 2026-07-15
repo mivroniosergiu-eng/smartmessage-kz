@@ -83,6 +83,7 @@ interface RuntimeSession {
   state: SessionState
   generation: number
   allowRecoveryConnect: boolean
+  requiresBannedTransportClose: boolean
 }
 
 interface ActiveOperation {
@@ -150,6 +151,9 @@ export class BaileysSessionManager implements SessionManager {
   async closeTransport(instanceId: string): Promise<SessionState> {
     const normalizedInstanceId = normalizeInstanceId(instanceId)
     const runtime = await this.ensureRuntime(normalizedInstanceId)
+    if (runtime.state.status === 'banned') {
+      return this.confirmBannedTransportClosed(normalizedInstanceId, runtime)
+    }
     if (runtime.state.status !== 'connecting' && runtime.state.status !== 'connected') {
       return cloneState(runtime.state)
     }
@@ -188,7 +192,13 @@ export class BaileysSessionManager implements SessionManager {
     }
 
     const generation = runtime.generation
-    await this.recordDisconnect(normalizedInstanceId, runtime, generation, reason)
+    await this.recordDisconnect(
+      normalizedInstanceId,
+      runtime,
+      generation,
+      reason,
+      reason === 'banned',
+    )
     return cloneState(runtime.state)
   }
 
@@ -221,6 +231,25 @@ export class BaileysSessionManager implements SessionManager {
     } finally {
       this.releaseOperation(normalizedInstanceId, operation.token)
     }
+  }
+
+  private async confirmBannedTransportClosed(
+    instanceId: string,
+    runtime: RuntimeSession,
+  ): Promise<SessionState> {
+    if (!runtime.requiresBannedTransportClose) return cloneState(runtime.state)
+
+    const operation = this.reserveOperation(instanceId, runtime, 'close')
+    try {
+      await this.transport.closeTransport(instanceId)
+    } catch (error: unknown) {
+      if (!(error instanceof WaTransportNotConnectedError)) throw error
+    } finally {
+      this.releaseOperation(instanceId, operation.token)
+    }
+
+    runtime.requiresBannedTransportClose = false
+    return cloneState(runtime.state)
   }
 
   private reserveOperation(
@@ -314,6 +343,7 @@ export class BaileysSessionManager implements SessionManager {
     runtime: RuntimeSession,
     generation: number,
     reason: WaDisconnectReason,
+    requiresBannedTransportClose = false,
   ): Promise<SessionState | undefined> {
     if (runtime.generation !== generation) return undefined
     if (reason === 'logged_out' && runtime.state.status === 'logged_out') {
@@ -321,6 +351,7 @@ export class BaileysSessionManager implements SessionManager {
     }
 
     runtime.state = transitionDisconnect(runtime.state, reason)
+    runtime.requiresBannedTransportClose = reason === 'banned' && requiresBannedTransportClose
     const terminalState = cloneState(runtime.state)
     runtime.allowRecoveryConnect = false
     runtime.generation += 1
@@ -397,6 +428,7 @@ export class BaileysSessionManager implements SessionManager {
         },
         generation: 0,
         allowRecoveryConnect: false,
+        requiresBannedTransportClose: false,
       }
       this.sessions.set(instanceId, runtime)
       return runtime
