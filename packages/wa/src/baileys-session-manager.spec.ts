@@ -595,6 +595,28 @@ describe('BaileysSessionManager', () => {
     expect(transport.connect).toHaveBeenCalledOnce()
   })
 
+  it('physically closes a legacy-banned transport while preserving terminal state', async () => {
+    const transport = createFakeTransport()
+    const manager = new BaileysSessionManager(transport, new InMemoryWaAuthStateStore())
+    await manager.connect('instance-banned-close')
+    await manager.handleDisconnect('instance-banned-close', 'banned')
+
+    await expect(manager.closeTransport('instance-banned-close')).resolves.toMatchObject({
+      status: 'banned',
+      lastDisconnectReason: 'banned',
+    })
+    await expect(manager.closeTransport('instance-banned-close')).resolves.toMatchObject({
+      status: 'banned',
+      lastDisconnectReason: 'banned',
+    })
+
+    expect(transport.closeTransport).toHaveBeenCalledOnce()
+    await expect(manager.getState('instance-banned-close')).resolves.toMatchObject({
+      status: 'banned',
+      lastDisconnectReason: 'banned',
+    })
+  })
+
   it.each([
     ['banned', 'banned'],
     ['logged_out', 'logged_out'],
