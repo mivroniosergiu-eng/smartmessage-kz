@@ -18,6 +18,7 @@ import type {
   BaileysTransportConnectInput,
   BaileysTransportConnector,
 } from './baileys-transport-adapter'
+import { mapBaileysMessageUpdates, mapBaileysMessagesUpsert } from './receiver'
 import { createWaRestrictedUntil, type SessionState, type WaDisconnectReason } from './session'
 import {
   WaTransportAlreadyConnectedError,
@@ -121,6 +122,18 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       })
       socket.ev.on('connection.update', (update) => {
         this.enqueueConnectionUpdate(instanceId, active, update)
+      })
+      socket.ev.on('messages.upsert', (update) => {
+        this.enqueueCurrentTransportEvent(instanceId, active, async () => {
+          const event = mapBaileysMessagesUpsert(instanceId, update)
+          if (event) await active.callbacks?.onMessageUpsert?.(event)
+        })
+      })
+      socket.ev.on('messages.update', (updates) => {
+        this.enqueueCurrentTransportEvent(instanceId, active, async () => {
+          const event = mapBaileysMessageUpdates(instanceId, updates)
+          if (event) await active.callbacks?.onMessageUpdate?.(event)
+        })
       })
       this.activeTransports.set(instanceId, active)
 

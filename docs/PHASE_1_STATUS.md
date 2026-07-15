@@ -30,10 +30,10 @@
 - Baileys 403/429 классифицируются как `banned`/`restricted`; cooldown имеет безопасный диапазон 1 минута–7 дней, повторное событие не сокращает `restrictedUntil`;
 - `RESTRICTED` закрывает transport без logout и восстанавливается через точный delayed BullMQ job; DB-authoritative execution и startup reconciliation исключают ранний/stale reconnect;
 - `BANNED` монотонно блокирует producer, execution и ownership start-gates после рестарта; fenced переход создаёт один санитизированный `AuditLog`.
+- `messages.upsert/update` единственного активного socket-generation преобразуются в нормализованные типизированные domain batch-события; malformed records фильтруются, consumer failure не рвёт event stream, raw Baileys payload и автоответ отсутствуют.
 
 ## Остаток до DoD Фазы 1
 
-- receiver skeleton: `messages.upsert/update` → типизированные доменные события без автоответа;
 - асинхронная phone validation queue и enum-переходы Contact;
 - идемпотентная одиночная text-отправка с `MessageLog`;
 - защищённая web-страница WhatsApp: список/status, QR, start/stop/logout, validation и manual single send;

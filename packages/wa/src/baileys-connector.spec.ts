@@ -77,6 +77,102 @@ describe('BaileysSocketTransportConnector', () => {
     )
   })
 
+  it('forwards typed message upsert and update events for the exact instance', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const callbacks: WaTransportCallbacks = {
+      onMessageUpsert: vi.fn(),
+      onMessageUpdate: vi.fn(),
+    }
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await connector.connect({ instanceId: 'instance-receiver', callbacks })
+    await socket.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { id: 'incoming-1', remoteJid: '77010000001@s.whatsapp.net', fromMe: false },
+          message: { conversation: 'Здравствуйте' },
+        },
+      ],
+    })
+    await socket.emit('messages.update', [
+      {
+        key: { id: 'incoming-1', remoteJid: '77010000001@s.whatsapp.net', fromMe: false },
+        update: { status: 3 },
+      },
+    ])
+    await flushAsyncEvents()
+
+    expect(callbacks.onMessageUpsert).toHaveBeenCalledWith({
+      eventType: 'wa.message.upsert',
+      instanceId: 'instance-receiver',
+      upsertType: 'notify',
+      messages: [
+        {
+          key: {
+            id: 'incoming-1',
+            remoteJid: '77010000001@s.whatsapp.net',
+            fromMe: false,
+          },
+          content: { type: 'conversation', text: 'Здравствуйте' },
+        },
+      ],
+    })
+    expect(callbacks.onMessageUpdate).toHaveBeenCalledWith({
+      eventType: 'wa.message.update',
+      instanceId: 'instance-receiver',
+      updates: [
+        {
+          key: {
+            id: 'incoming-1',
+            remoteJid: '77010000001@s.whatsapp.net',
+            fromMe: false,
+          },
+          status: 3,
+        },
+      ],
+    })
+    expect(socket.logout).not.toHaveBeenCalled()
+    expect(socket.end).not.toHaveBeenCalled()
+  })
+
+  it('reports receiver failures and continues the serialized message event stream', async () => {
+    const socket = createFakeBaileysSocket()
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const receiverError = new Error('receiver unavailable')
+    const callbacks: WaTransportCallbacks = {
+      onMessageUpsert: vi.fn().mockRejectedValueOnce(receiverError),
+      onMessageUpdate: vi.fn(),
+      onError: vi.fn(),
+    }
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+
+    await connector.connect({ instanceId: 'instance-receiver-error', callbacks })
+    await socket.emit('messages.upsert', {
+      type: 'notify',
+      messages: [
+        {
+          key: { id: 'incoming-2', remoteJid: '77010000002@s.whatsapp.net' },
+          message: { conversation: 'Первое' },
+        },
+      ],
+    })
+    await socket.emit('messages.update', [
+      {
+        key: { id: 'incoming-2', remoteJid: '77010000002@s.whatsapp.net' },
+        update: { status: 4 },
+      },
+    ])
+    await flushAsyncEvents()
+
+    expect(callbacks.onError).toHaveBeenCalledWith({
+      instanceId: 'instance-receiver-error',
+      error: receiverError,
+    })
+    expect(callbacks.onMessageUpdate).toHaveBeenCalledOnce()
+  })
+
   it('rejects a second active socket for the same normalized instance id', async () => {
     const socket = createFakeBaileysSocket()
     baileysMock.makeWASocket.mockReturnValueOnce(socket)
@@ -1272,7 +1368,7 @@ describe('BaileysSocketTransportConnector', () => {
   })
 })
 
-type FakeBaileysEvent = 'connection.update' | 'creds.update'
+type FakeBaileysEvent = 'connection.update' | 'creds.update' | 'messages.upsert' | 'messages.update'
 type FakeBaileysListener = (payload: never) => Promise<void> | void
 
 interface FakeBaileysSocket {

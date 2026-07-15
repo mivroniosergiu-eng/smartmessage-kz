@@ -72,6 +72,60 @@ describe('BaileysSessionManager', () => {
     })
   })
 
+  it('forwards receiver events only from the current transport generation', async () => {
+    const transport = createFakeTransport()
+    const events: WaSessionEvents = {
+      onMessageUpsert: vi.fn(),
+      onMessageUpdate: vi.fn(),
+    }
+    const manager = new BaileysSessionManager(transport, new InMemoryWaAuthStateStore(), events)
+
+    await manager.connect('instance-messages')
+    const callbacks = transport.latestCallbacks('instance-messages')
+    await callbacks.onMessageUpsert?.({
+      eventType: 'wa.message.upsert',
+      instanceId: 'untrusted-instance',
+      upsertType: 'notify',
+      messages: [
+        {
+          key: { id: 'message-1', remoteJid: 'chat@s.whatsapp.net', fromMe: false },
+          content: { type: 'conversation', text: 'Привет' },
+        },
+      ],
+    })
+    await callbacks.onMessageUpdate?.({
+      eventType: 'wa.message.update',
+      instanceId: 'untrusted-instance',
+      updates: [
+        {
+          key: { id: 'message-1', remoteJid: 'chat@s.whatsapp.net', fromMe: false },
+          status: 3,
+        },
+      ],
+    })
+
+    expect(events.onMessageUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ instanceId: 'instance-messages' }),
+    )
+    expect(events.onMessageUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ instanceId: 'instance-messages' }),
+    )
+
+    await transport.emitDisconnected('instance-messages', 'transient')
+    await callbacks.onMessageUpsert?.({
+      eventType: 'wa.message.upsert',
+      instanceId: 'instance-messages',
+      upsertType: 'notify',
+      messages: [
+        {
+          key: { id: 'stale-message', remoteJid: 'chat@s.whatsapp.net' },
+          content: { type: 'conversation', text: 'Устарело' },
+        },
+      ],
+    })
+    expect(events.onMessageUpsert).toHaveBeenCalledOnce()
+  })
+
   it('passes QR with the current registered state without logout or auth cleanup', async () => {
     const transport = createFakeTransport()
     const store = new InMemoryWaAuthStateStore()

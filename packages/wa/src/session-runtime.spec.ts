@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { InMemoryWaAuthStateStore } from './auth-state'
 import type { OwnerClaimResult, OwnerRegistry } from './owner-registry'
 import { InMemoryWaQrBootstrapRepository } from './qr-bootstrap'
+import type { WaMessageUpsertEvent, WaReceiver } from './receiver'
 import { createBaileysSessionRuntime } from './session-runtime'
 import type { WaRestrictionRecoveryScheduler } from './session-lifecycle'
 import { InMemoryWaAccountStatusRepository } from './status-repository'
@@ -20,6 +21,34 @@ describe('createBaileysSessionRuntime', () => {
     expect(transport.connect).not.toHaveBeenCalled()
     expect(transport.closeTransport).not.toHaveBeenCalled()
     expect(transport.logout).not.toHaveBeenCalled()
+  })
+
+  it('routes typed receiver events without creating any automatic send side effect', async () => {
+    const transport = createEventTransport()
+    const receiver: WaReceiver = {
+      onMessageUpsert: vi.fn(),
+      onMessageUpdate: vi.fn(),
+    }
+    const runtime = createHarness(transport, { receiver })
+    const event: WaMessageUpsertEvent = {
+      eventType: 'wa.message.upsert',
+      instanceId: 'instance-receiver-runtime',
+      upsertType: 'notify',
+      messages: [
+        {
+          key: { id: 'incoming-1', remoteJid: 'chat@s.whatsapp.net', fromMe: false },
+          content: { type: 'conversation', text: 'Привет' },
+        },
+      ],
+    }
+
+    await runtime.lifecycle.start('instance-receiver-runtime')
+    await transport.emitMessageUpsert('instance-receiver-runtime', event)
+
+    expect(receiver.onMessageUpsert).toHaveBeenCalledWith(event)
+    expect(transport.connect).toHaveBeenCalledOnce()
+    expect(transport.logout).not.toHaveBeenCalled()
+    await runtime.lifecycle.stop('instance-receiver-runtime')
   })
 
   it('persists QR and connected events immediately through the owned lifecycle', async () => {
@@ -145,6 +174,7 @@ function createHarness(
     statuses?: InMemoryWaAccountStatusRepository
     qr?: InMemoryWaQrBootstrapRepository
     recovery?: WaRestrictionRecoveryScheduler
+    receiver?: WaReceiver
   } = {},
 ) {
   return createBaileysSessionRuntime({
@@ -155,6 +185,7 @@ function createHarness(
     statusRepository: overrides.statuses ?? new InMemoryWaAccountStatusRepository(),
     qrBootstrapRepository: overrides.qr ?? new InMemoryWaQrBootstrapRepository(),
     restrictionRecoveryScheduler: overrides.recovery,
+    receiver: overrides.receiver,
     transport,
   })
 }
@@ -170,6 +201,7 @@ interface EventTransport extends WaTransportFactory {
     reason: 'transient' | 'restricted',
     restrictedUntil?: Date,
   ): Promise<void>
+  emitMessageUpsert(instanceId: string, event: WaMessageUpsertEvent): Promise<void>
 }
 
 function createEventTransport(hasAuthState = false): EventTransport {
@@ -217,6 +249,9 @@ function createEventTransport(hasAuthState = false): EventTransport {
         reason,
         ...(restrictedUntil ? { restrictedUntil } : {}),
       })
+    },
+    async emitMessageUpsert(instanceId, event) {
+      await callbacks.get(instanceId)?.onMessageUpsert?.(event)
     },
   }
 }

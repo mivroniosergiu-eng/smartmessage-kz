@@ -1,4 +1,5 @@
 import type { WaAuthStateStore } from './auth-state'
+import type { WaMessageUpdateEvent, WaMessageUpsertEvent } from './receiver'
 import type {
   SessionManager,
   SessionState,
@@ -47,6 +48,8 @@ export interface WaSessionEvents {
   onConnected?: (event: WaSessionConnectedEvent) => MaybePromise<void>
   onDisconnected?: (event: WaSessionDisconnectedEvent) => MaybePromise<void>
   onLoggedOut?: (event: WaSessionLoggedOutEvent) => MaybePromise<void>
+  onMessageUpsert?: (event: WaMessageUpsertEvent) => MaybePromise<void>
+  onMessageUpdate?: (event: WaMessageUpdateEvent) => MaybePromise<void>
   onError?: (event: WaSessionErrorEvent) => MaybePromise<void>
 }
 
@@ -350,6 +353,22 @@ export class BaileysSessionManager implements SessionManager {
         const runtime = this.currentRuntime(instanceId, generation)
         if (!runtime) return
         retiredState = await this.recordDisconnect(instanceId, runtime, generation, 'logged_out')
+      },
+      onMessageUpsert: async (event) => {
+        const runtime = this.currentRuntime(instanceId, generation)
+        if (!runtime) return
+        await this.dispatchObserver(instanceId, runtime, this.events.onMessageUpsert, {
+          ...event,
+          instanceId,
+        })
+      },
+      onMessageUpdate: async (event) => {
+        const runtime = this.currentRuntime(instanceId, generation)
+        if (!runtime) return
+        await this.dispatchObserver(instanceId, runtime, this.events.onMessageUpdate, {
+          ...event,
+          instanceId,
+        })
       },
     }
     if (this.events.onError) {

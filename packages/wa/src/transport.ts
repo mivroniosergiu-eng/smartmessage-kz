@@ -1,4 +1,5 @@
 import type { SessionState, WaDisconnectReason } from './session'
+import type { WaMessageUpdateEvent, WaMessageUpsertEvent } from './receiver'
 
 export type WaTransportSession = SessionState
 
@@ -61,6 +62,8 @@ export interface WaTransportCallbacks {
   onConnected?: (event: WaTransportConnectedEvent) => Promise<void> | void
   onDisconnected?: (event: WaTransportDisconnectedEvent) => Promise<void> | void
   onLoggedOut?: (event: WaTransportLoggedOutEvent) => Promise<void> | void
+  onMessageUpsert?: (event: WaMessageUpsertEvent) => Promise<void> | void
+  onMessageUpdate?: (event: WaMessageUpdateEvent) => Promise<void> | void
   onError?: (event: WaTransportErrorEvent) => Promise<void> | void
 }
 
