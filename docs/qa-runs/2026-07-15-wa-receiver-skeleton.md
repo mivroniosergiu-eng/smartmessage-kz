@@ -1,8 +1,9 @@
 # QA-run: WA receiver skeleton — 2026-07-15
 
 - Исполнитель: Codex task-agent; subagent review запрошен, но внешний сервис вернул `402 deactivated_workspace`
-- Ветка: `feat/phase-1-wa-receiver`
-- PR/CI: pending
+- Ветка/коммит: `feat/phase-1-wa-receiver` / `cacf1bfd92558f21f4917f014b92d5ca6c2903c9`
+- PR: https://github.com/mivroniosergiu-eng/smartmessage-kz/pull/28
+- CI/CodeRabbit: pending
 
 ## Автотесты
 
