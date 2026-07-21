@@ -16,10 +16,11 @@ import { WhatsappLiveRefresh } from './whatsapp-live-refresh'
 import { WhatsappQrCode } from './whatsapp-qr-code'
 
 type WhatsappPageProps = {
-  searchParams?: { error?: string }
+  searchParams?: Promise<{ error?: string }>
 }
 
 export default async function WhatsappPage({ searchParams }: WhatsappPageProps) {
+  const resolvedSearchParams = await searchParams
   const session = await getSession()
   if (!session) redirect('/login')
 
@@ -61,9 +62,9 @@ export default async function WhatsappPage({ searchParams }: WhatsappPageProps) 
         </a>
       </header>
 
-      {searchParams?.error ? (
+      {resolvedSearchParams?.error ? (
         <p className="error-message" role="alert">
-          {searchParams.error}
+          {resolvedSearchParams.error}
         </p>
       ) : null}
 

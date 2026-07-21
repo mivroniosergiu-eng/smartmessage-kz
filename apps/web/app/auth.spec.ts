@@ -47,14 +47,31 @@ describe('Auth Utilities', () => {
   })
 
   it('encodes, signs, and decodes sessions', () => {
-    const payload = { userId: '123', email: 'test@mail.com', role: 'OWNER' }
-    const token = encryptSession(payload)
+    const payload = {
+      userId: '123',
+      email: 'test@mail.com',
+      teamId: 'team-1',
+      role: 'OWNER' as const,
+    }
+    const issuedAtMs = Date.UTC(2026, 6, 22, 10, 0, 0)
+    const token = encryptSession(payload, { nowMs: issuedAtMs, ttlSeconds: 60 })
 
     expect(token).toContain('.')
-    expect(decryptSession(token)).toEqual(payload)
+    expect(decryptSession(token, { nowMs: issuedAtMs + 59_000 })).toEqual(payload)
+    expect(decryptSession(token, { nowMs: issuedAtMs + 60_000 })).toBeNull()
 
     const tamperedToken = token.slice(0, -5) + 'xxxxx'
     expect(decryptSession(tamperedToken)).toBeNull()
+  })
+
+  it('rejects signed session payloads with missing or invalid identity fields', () => {
+    const issuedAtMs = Date.UTC(2026, 6, 22, 10, 0, 0)
+    const invalidRole = encryptSession(
+      { userId: '123', email: 'test@mail.com', teamId: 'team-1', role: 'SUPERUSER' } as never,
+      { nowMs: issuedAtMs },
+    )
+
+    expect(decryptSession(invalidRole, { nowMs: issuedAtMs })).toBeNull()
   })
 })
 
