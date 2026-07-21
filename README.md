@@ -20,7 +20,7 @@ B2B SaaS сквозной экосистемы: ИИ-таргет → CRM + ча
   - **прямой push в `main` запрещён — только через Pull Request** (распространяется и на админов, enforce_admins);
   - linear history (rebase/squash), force-push и удаление `main` запрещены;
   - обязательное разрешение всех тредов в PR перед merge;
-  - **CI-гейт `quality-gate` как required-чек подключается в Фазе 0** — когда активируется `.github/workflows/ci.yml`. Сейчас CI ещё нет, поэтому required-status-check намеренно не выставлен (иначе ни один PR нельзя слить). Это последовательность, а не послабление.
+  - **CI-гейт `quality-gate` активен** через `.github/workflows/ci.yml` и запускается для PR; на 2026-07-16 GitHub branch protection ещё не требует status-check (`required_status_checks: null`), поэтому перед merge результат CI проверяется явно. Перевод `quality-gate` в required остаётся отдельным инфраструктурным шагом.
   - approve пока не требуется (соло-аккаунт: автор не может апрувить свой PR); человек контролирует merge кнопкой. При появлении второго ревьюера — поднять `required_approving_review_count`.
 - **Защита от утечки секретов: АКТИВНА** — GitHub secret scanning + push protection (push с обнаруженным ключом блокируется на сервере). Плюс локально `.gitignore` (`.env*`, `auth_info*/`, `wa-sessions/`, `*.session`).
 

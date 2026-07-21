@@ -41,6 +41,7 @@ export class WaWorkerIdentityLossGate {
 
 export class WaWorkerIdentityLossSupervisor {
   private lossShutdown?: Promise<void>
+  private readonly additionalWorkers: WaWorkerIdentityIntakePort[] = []
 
   constructor(
     private readonly lifecycleWorker: WaWorkerIdentityIntakePort,
@@ -48,6 +49,11 @@ export class WaWorkerIdentityLossSupervisor {
     private readonly lifecycle: WaWorkerIdentityLifecyclePort,
     private readonly terminate: WaWorkerIdentityFatalHandler,
   ) {}
+
+  addIntakeWorkers(...workers: WaWorkerIdentityIntakePort[]): this {
+    this.additionalWorkers.push(...workers)
+    return this
+  }
 
   reportLoss(error: Error): Promise<void> {
     if (this.lossShutdown) return this.lossShutdown
@@ -60,6 +66,7 @@ export class WaWorkerIdentityLossSupervisor {
   private async failClosed(error: Error): Promise<void> {
     this.pauseWithoutWaiting(this.lifecycleWorker)
     this.pauseWithoutWaiting(this.ownerLifecycleWorker)
+    for (const worker of this.additionalWorkers) this.pauseWithoutWaiting(worker)
 
     await settleWithin(
       invokeSafely(() => this.lifecycle.shutdownAll()),
@@ -69,6 +76,7 @@ export class WaWorkerIdentityLossSupervisor {
       Promise.allSettled([
         invokeSafely(() => this.lifecycleWorker.close(true)),
         invokeSafely(() => this.ownerLifecycleWorker.close(true)),
+        ...this.additionalWorkers.map((worker) => invokeSafely(() => worker.close(true))),
       ]).then(() => undefined),
       IDENTITY_LOSS_WORKER_CLOSE_GRACE_MS,
     )

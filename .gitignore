@@ -42,5 +42,6 @@ Thumbs.db
 prisma/generated/
 
 # Misc
+.scratch/
 *.tsbuildinfo
 .turbo/

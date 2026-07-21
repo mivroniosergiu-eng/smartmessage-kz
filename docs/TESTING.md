@@ -65,7 +65,7 @@ packages/*/
 
 ### 4.2. Интеграционные (средний слой)
 - **БД-интеграция**: реальная test-PostgreSQL. Миграции применяются, запросы возвращают ожидаемое, транзакции откатываются, unique-constraint'ы (идемпотентность) работают.
-- **Очереди**: test-Redis. Задание ставится → воркер подбирает → side-effect вызывается с ожидаемыми аргументами → при выбросе ошибки retry с backoff → идемпотентность (повторный enqueue того же unique-id не дублирует).
+- **Очереди**: test-Redis. Задание ставится → воркер подбирает → side-effect вызывается с ожидаемыми аргументами → при выбросе ошибки retry с backoff → идемпотентность (повторный enqueue того же unique-id не дублирует). WA phone validation закреплён реальным Redis/BullMQ smoke-тестом в `apps/worker/src/wa/wa-phone-validation.integration.spec.ts`: duplicate enqueue даёт один вызов, финальный failure переводит run в `ERROR`, а новый enqueue создаёт новый run. Одиночная отправка закреплена `apps/worker/src/wa/wa-single-send.integration.spec.ts`: duplicate enqueue использует один mock sender side effect и один durable `MessageLog`.
 - **API routes / Server Actions**: с test-БД и mock-внешними сервисами. Проверка auth/прав, zod-валидации ввода, формы ответа, ошибок.
 - **Webhook handlers**: входящий WA-сообщение → Lead/MessageLog создан; Meta ad-lead webhook → Lead создан; webhook платёжного провайдера → Subscription обновлён (с проверкой подписи).
 - **Воркер end-to-end в test-режиме**: Campaign active → BullMQ → Sender (mock Baileys) → MessageLog записан → Stats обновлены.
@@ -191,9 +191,8 @@ packages/*/
 ```
 pnpm lint              # 0 ошибок
 pnpm typecheck         # 0 ошибок (tsc strict)
-pnpm test:unit         # всё зелёно, покрытие критичных пакетов ≥ порога
-pnpm test:integration  # всё зелёно
-pnpm test:contract     # всё зелёно
+pnpm test              # unit/integration/contract suite всего workspace зелёный
+pnpm test:cov          # покрытие критичных пакетов ≥ порога
 pnpm test:e2e          # всё зелёно (критичные потоки)
 pnpm build             # 0 ошибок
 ```

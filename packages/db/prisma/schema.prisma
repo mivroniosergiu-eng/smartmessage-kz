@@ -103,6 +103,7 @@ model Contact {
   phone     String // нормализованный E.164 (packages/shared normalizePhone)
   name      String?
   isValid   ContactWaStatus? // NULL = не проверен; см. docs/ARCHITECTURE.md §6
+  waValidationRunId String? // fence текущего validate-phone run против stale result
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt
 
@@ -239,6 +240,7 @@ model Campaign {
 
 enum MessageLogStatus {
   QUEUED
+  DISPATCHING
   SENT
   DELIVERED
   READ
@@ -260,10 +262,15 @@ model MessageLog {
   phone      String
   type       String
   message    String
+  idempotencyKey String
+  providerMessageId String?
+  dispatchAttemptedAt DateTime?
   status     MessageLogStatus @default(QUEUED)
   errorType  MessageErrorType?
   timePost   DateTime         @default(now())
 
+  @@unique([teamId, idempotencyKey])
+  @@unique([instanceId, providerMessageId])
   @@index([teamId])
   @@index([instanceId])
 }

@@ -8,12 +8,20 @@ import {
   WaTransportAlreadyConnectedError,
   WaTransportCloseTimeoutError,
   WaTransportNotConnectedError,
+  WaTransportOperationDrainTimeoutError,
   WaTransportOperationInProgressError,
   type WaTransportCallbacks,
 } from './transport'
 
 const baileysMock = vi.hoisted(() => {
   const makeWASocket = vi.fn()
+  const initAuthCreds = vi.fn(() => ({
+    noiseKey: {
+      private: Buffer.from([1, 2, 3]),
+      public: Buffer.from([4, 5, 6]),
+    },
+    registered: false,
+  }))
 
   return {
     DisconnectReason: {
@@ -28,6 +36,7 @@ const baileysMock = vi.hoisted(() => {
       forbidden: 403,
       unavailableService: 503,
     },
+    initAuthCreds,
     makeWASocket,
   }
 })
@@ -35,12 +44,14 @@ const baileysMock = vi.hoisted(() => {
 vi.mock('@whiskeysockets/baileys', () => ({
   DisconnectReason: baileysMock.DisconnectReason,
   default: baileysMock.makeWASocket,
+  initAuthCreds: baileysMock.initAuthCreds,
   makeWASocket: baileysMock.makeWASocket,
 }))
 
 describe('BaileysSocketTransportConnector', () => {
   beforeEach(() => {
     baileysMock.makeWASocket.mockReset()
+    baileysMock.initAuthCreds.mockClear()
   })
 
   it('does not create a Baileys socket when the connector module is imported or constructed', () => {
@@ -66,7 +77,13 @@ describe('BaileysSocketTransportConnector', () => {
     expect(baileysMock.makeWASocket).toHaveBeenCalledWith(
       expect.objectContaining({
         auth: expect.objectContaining({
-          creds: {},
+          creds: expect.objectContaining({
+            noiseKey: {
+              private: Buffer.from([1, 2, 3]),
+              public: Buffer.from([4, 5, 6]),
+            },
+            registered: false,
+          }),
           keys: expect.objectContaining({
             get: expect.any(Function),
             set: expect.any(Function),
@@ -75,6 +92,224 @@ describe('BaileysSocketTransportConnector', () => {
         printQRInTerminal: false,
       }),
     )
+    expect(baileysMock.initAuthCreds).toHaveBeenCalledOnce()
+    await expect(store.has('instance-1')).resolves.toBe(false)
+  })
+
+  it('validates a normalized phone through the already active socket without opening another one', async () => {
+    const socket = createFakeBaileysSocket()
+    socket.onWhatsApp.mockResolvedValueOnce([{ exists: true, jid: '77001234567@s.whatsapp.net' }])
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+    await connector.connect({ instanceId: 'instance-validator' })
+
+    await expect(
+      connector.validate({ instanceId: ' instance-validator ', phone: '8 700 123 45 67' }),
+    ).resolves.toEqual({
+      instanceId: 'instance-validator',
+      phone: '+77001234567',
+      status: 'confirmed',
+    })
+
+    expect(socket.onWhatsApp).toHaveBeenCalledWith('77001234567@s.whatsapp.net')
+    expect(baileysMock.makeWASocket).toHaveBeenCalledOnce()
+  })
+
+  it('maps an absent account to not_on_whatsapp and rejects validation without an active socket', async () => {
+    const socket = createFakeBaileysSocket()
+    socket.onWhatsApp.mockResolvedValueOnce([])
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+    await connector.connect({ instanceId: 'instance-validator-absent' })
+
+    await expect(
+      connector.validate({
+        instanceId: 'instance-validator-absent',
+        phone: '+77001234567',
+      }),
+    ).resolves.toMatchObject({ status: 'not_on_whatsapp' })
+    await expect(
+      connector.validate({ instanceId: 'missing-instance', phone: '+77001234567' }),
+    ).rejects.toBeInstanceOf(WaTransportNotConnectedError)
+
+    expect(baileysMock.makeWASocket).toHaveBeenCalledOnce()
+  })
+
+  it('sends text through the already active socket with a deterministic idempotency id', async () => {
+    const socket = createFakeBaileysSocket()
+    socket.sendMessage.mockResolvedValueOnce({ key: { id: 'server-message-id' } })
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+    await connector.connect({ instanceId: 'instance-sender' })
+
+    await expect(
+      connector.send({
+        instanceId: 'instance-sender',
+        recipientPhone: '8 700 123 45 67',
+        kind: 'text',
+        text: ' Hello ',
+        idempotencyKey: 'request-1',
+      }),
+    ).resolves.toEqual({ messageId: 'server-message-id', status: 'accepted' })
+
+    expect(socket.sendMessage).toHaveBeenCalledWith(
+      '77001234567@s.whatsapp.net',
+      { text: 'Hello' },
+      { messageId: expect.stringMatching(/^[A-F0-9]{32}$/) },
+    )
+    expect(baileysMock.makeWASocket).toHaveBeenCalledOnce()
+  })
+
+  it('finishes an accepted send before closing the transport', async () => {
+    const socket = createFakeBaileysSocket()
+    const sendStarted = createDeferred<void>()
+    const sendGate = createDeferred<{ key: { id: string } }>()
+    socket.sendMessage.mockImplementationOnce(async () => {
+      sendStarted.resolve(undefined)
+      return sendGate.promise
+    })
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+    await connector.connect({ instanceId: 'instance-send-close-race' })
+
+    const send = connector.send({
+      instanceId: 'instance-send-close-race',
+      recipientPhone: '+77001234567',
+      kind: 'text',
+      text: 'Hello',
+      idempotencyKey: 'request-close-race',
+    })
+    await sendStarted.promise
+
+    const close = connector.closeTransport('instance-send-close-race')
+    await flushAsyncEvents()
+
+    expect(socket.end).not.toHaveBeenCalled()
+    sendGate.resolve({ key: { id: 'accepted-before-close' } })
+    await expect(send).resolves.toEqual({
+      messageId: 'accepted-before-close',
+      status: 'accepted',
+    })
+    await expect(close).resolves.toMatchObject({ status: 'disconnected' })
+    expect(socket.end).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a new send after transport close has been accepted', async () => {
+    const socket = createFakeBaileysSocket()
+    const closeGate = createDeferred<void>()
+    socket.end.mockReturnValueOnce(closeGate.promise)
+    baileysMock.makeWASocket.mockReturnValueOnce(socket)
+    const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore())
+    await connector.connect({ instanceId: 'instance-close-before-send' })
+
+    const close = connector.closeTransport('instance-close-before-send')
+
+    await expect(
+      connector.send({
+        instanceId: 'instance-close-before-send',
+        recipientPhone: '+77001234567',
+        kind: 'text',
+        text: 'Must not send',
+        idempotencyKey: 'request-after-close',
+      }),
+    ).rejects.toBeInstanceOf(WaTransportNotConnectedError)
+    expect(socket.sendMessage).not.toHaveBeenCalled()
+
+    closeGate.resolve(undefined)
+    await socket.emit('connection.update', {
+      connection: 'close',
+      lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+    })
+    await expect(close).resolves.toMatchObject({ status: 'disconnected' })
+  })
+
+  it('force-closes after the bounded drain when an accepted send never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = createFakeBaileysSocket()
+      const sendStarted = createDeferred<void>()
+      socket.sendMessage.mockImplementationOnce(async () => {
+        sendStarted.resolve(undefined)
+        return new Promise<never>(() => undefined)
+      })
+      baileysMock.makeWASocket.mockReturnValueOnce(socket)
+      const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+      const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore(), {
+        transportCloseTimeoutMs: 1_000,
+      })
+      await connector.connect({ instanceId: 'instance-hung-send-close', callbacks })
+
+      void connector.send({
+        instanceId: 'instance-hung-send-close',
+        recipientPhone: '+77001234567',
+        kind: 'text',
+        text: 'May be ambiguous',
+        idempotencyKey: 'request-hung-send',
+      })
+      await sendStarted.promise
+      const close = connector.closeTransport('instance-hung-send-close')
+
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(socket.end).toHaveBeenCalledOnce()
+      await expect(close).resolves.toMatchObject({ status: 'disconnected' })
+      expect(callbacks.onError).toHaveBeenCalledWith({
+        instanceId: 'instance-hung-send-close',
+        error: expect.any(WaTransportOperationDrainTimeoutError),
+      })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('force-closes after bounded auth persistence drain and recovers after the write settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = createFakeBaileysSocket()
+      baileysMock.makeWASocket.mockReturnValueOnce(socket)
+      const store = new InMemoryWaAuthStateStore()
+      const writeStarted = createDeferred<void>()
+      const writeGate = createDeferred<void>()
+      vi.spyOn(store, 'write').mockImplementationOnce(async () => {
+        writeStarted.resolve(undefined)
+        await writeGate.promise
+      })
+      const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+      const connector = new BaileysSocketTransportConnector(store, {
+        transportCloseTimeoutMs: 1_000,
+      })
+      await connector.connect({ instanceId: 'instance-hung-auth-close', callbacks })
+      await socket.emit('creds.update', { registered: true })
+      await writeStarted.promise
+
+      const close = connector.closeTransport('instance-hung-auth-close')
+      let closeError: unknown
+      void close.catch((error: unknown) => {
+        closeError = error
+      })
+
+      await vi.advanceTimersByTimeAsync(2_000)
+
+      expect(socket.end).toHaveBeenCalledOnce()
+      expect(closeError).toBeInstanceOf(WaTransportOperationDrainTimeoutError)
+      expect(callbacks.onError).toHaveBeenCalledWith({
+        instanceId: 'instance-hung-auth-close',
+        error: closeError,
+      })
+      await expect(
+        connector.connect({ instanceId: 'instance-hung-auth-close' }),
+      ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+
+      writeGate.resolve(undefined)
+      await expect(connector.closeTransport('instance-hung-auth-close')).resolves.toMatchObject({
+        status: 'disconnected',
+      })
+      expect(socket.end).toHaveBeenCalledTimes(2)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('forwards typed message upsert and update events for the exact instance', async () => {
@@ -571,6 +806,38 @@ describe('BaileysSocketTransportConnector', () => {
     }
   })
 
+  it('force-closes and fails boundedly when Baileys logout never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = createFakeBaileysSocket()
+      socket.logout.mockReturnValueOnce(new Promise<never>(() => undefined))
+      baileysMock.makeWASocket.mockReturnValueOnce(socket)
+      const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+      const connector = new BaileysSocketTransportConnector(new InMemoryWaAuthStateStore(), {
+        transportCloseTimeoutMs: 1_000,
+      })
+
+      await connector.connect({ instanceId: 'instance-hung-logout', callbacks })
+      const logout = connector.logout('instance-hung-logout')
+      let logoutError: unknown
+      void logout.catch((error: unknown) => {
+        logoutError = error
+      })
+
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(socket.end).toHaveBeenCalledOnce()
+      expect(logoutError).toBeInstanceOf(WaTransportOperationDrainTimeoutError)
+      expect(callbacks.onError).toHaveBeenCalledWith({
+        instanceId: 'instance-hung-logout',
+        error: logoutError,
+      })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('emits QR events with instance id, QR payload, and deterministic expiry', async () => {
     const socket = createFakeBaileysSocket()
     baileysMock.makeWASocket.mockReturnValueOnce(socket)
@@ -797,6 +1064,50 @@ describe('BaileysSocketTransportConnector', () => {
     writeGate.resolve(undefined)
     await expect(logout).resolves.toMatchObject({ status: 'logged_out', hasAuthState: false })
     await expect(store.has('instance-write-drain')).resolves.toBe(false)
+  })
+
+  it('fails logout boundedly without clearing auth while persistence is unresolved', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = createFakeBaileysSocket()
+      baileysMock.makeWASocket.mockReturnValueOnce(socket)
+      const store = new InMemoryWaAuthStateStore()
+      await store.write('instance-hung-auth-logout', { creds: { registered: true }, keys: {} })
+      const writeStarted = createDeferred<void>()
+      vi.spyOn(store, 'write').mockImplementationOnce(async () => {
+        writeStarted.resolve(undefined)
+        return new Promise<never>(() => undefined)
+      })
+      const callbacks: WaTransportCallbacks = { onError: vi.fn() }
+      const connector = new BaileysSocketTransportConnector(store, {
+        transportCloseTimeoutMs: 1_000,
+      })
+      await connector.connect({ instanceId: 'instance-hung-auth-logout', callbacks })
+      await socket.emit('creds.update', { registered: false })
+      await writeStarted.promise
+
+      const logout = connector.logout('instance-hung-auth-logout')
+      let logoutError: unknown
+      void logout.catch((error: unknown) => {
+        logoutError = error
+      })
+
+      await vi.advanceTimersByTimeAsync(2_000)
+
+      expect(socket.logout).toHaveBeenCalledOnce()
+      expect(logoutError).toBeInstanceOf(WaTransportOperationDrainTimeoutError)
+      await expect(store.has('instance-hung-auth-logout')).resolves.toBe(true)
+      await expect(
+        connector.connect({ instanceId: 'instance-hung-auth-logout' }),
+      ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+      expect(callbacks.onError).toHaveBeenCalledWith({
+        instanceId: 'instance-hung-auth-logout',
+        error: logoutError,
+      })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('drains a direct Baileys key write before logout clears persisted state', async () => {
@@ -1056,6 +1367,51 @@ describe('BaileysSocketTransportConnector', () => {
       instanceId: 'instance-transient-write-error',
       error: writeError,
     })
+  })
+
+  it('completes a remote disconnect boundedly when auth persistence never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = createFakeBaileysSocket()
+      baileysMock.makeWASocket.mockReturnValueOnce(socket)
+      const store = new InMemoryWaAuthStateStore()
+      const writeStarted = createDeferred<void>()
+      vi.spyOn(store, 'write').mockImplementationOnce(async () => {
+        writeStarted.resolve(undefined)
+        return new Promise<never>(() => undefined)
+      })
+      const callbacks: WaTransportCallbacks = {
+        onDisconnected: vi.fn(),
+        onError: vi.fn(),
+      }
+      const connector = new BaileysSocketTransportConnector(store, {
+        transportCloseTimeoutMs: 1_000,
+      })
+      await connector.connect({ instanceId: 'instance-hung-auth-remote-close', callbacks })
+      await socket.emit('creds.update', { registered: true })
+      await writeStarted.promise
+      await socket.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: { error: createBaileysCloseError(428), date: new Date() },
+      })
+
+      await vi.advanceTimersByTimeAsync(2_000)
+
+      expect(callbacks.onDisconnected).toHaveBeenCalledWith({
+        instanceId: 'instance-hung-auth-remote-close',
+        reason: 'connection_closed',
+      })
+      expect(callbacks.onError).toHaveBeenCalledWith({
+        instanceId: 'instance-hung-auth-remote-close',
+        error: expect.any(WaTransportOperationDrainTimeoutError),
+      })
+      await expect(
+        connector.connect({ instanceId: 'instance-hung-auth-remote-close' }),
+      ).rejects.toBeInstanceOf(WaTransportAlreadyConnectedError)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('releases remote close ownership before invoking reconnect callback', async () => {
@@ -1337,7 +1693,19 @@ describe('BaileysSocketTransportConnector', () => {
     })
 
     await expect(store.read('instance-binary')).resolves.toEqual({
-      creds: {},
+      creds: {
+        noiseKey: {
+          private: {
+            __smartmessageWaBinary: 'buffer',
+            data: [1, 2, 3],
+          },
+          public: {
+            __smartmessageWaBinary: 'buffer',
+            data: [4, 5, 6],
+          },
+        },
+        registered: false,
+      },
       keys: {
         session: {
           contact: {
@@ -1351,6 +1719,10 @@ describe('BaileysSocketTransportConnector', () => {
     await connector.closeTransport('instance-binary')
     await connector.connect({ instanceId: 'instance-binary' })
     const secondAuth = baileysMock.makeWASocket.mock.calls[1]?.[0].auth
+    expect(secondAuth.creds.noiseKey).toEqual({
+      private: Buffer.from([1, 2, 3]),
+      public: Buffer.from([4, 5, 6]),
+    })
     await expect(secondAuth.keys.get('session', ['contact'])).resolves.toEqual({
       contact: new Uint8Array([1, 2, 3]),
     })
@@ -1375,6 +1747,8 @@ interface FakeBaileysSocket {
   ev: { on: (event: FakeBaileysEvent, listener: FakeBaileysListener) => void }
   end: ReturnType<typeof vi.fn>
   logout: ReturnType<typeof vi.fn>
+  onWhatsApp: ReturnType<typeof vi.fn>
+  sendMessage: ReturnType<typeof vi.fn>
   emit: (event: FakeBaileysEvent, payload: unknown) => Promise<void>
 }
 
@@ -1393,6 +1767,8 @@ function createFakeBaileysSocket(): FakeBaileysSocket {
       })
     }),
     logout: vi.fn(),
+    onWhatsApp: vi.fn(),
+    sendMessage: vi.fn(),
     emit: async (event, payload) => {
       for (const listener of listeners.get(event) ?? []) {
         await listener(payload as never)

@@ -19,6 +19,19 @@ export interface MessageSender {
   send(payload: SendMessagePayload): Promise<SendMessageResult>
 }
 
+export class WaMessageSenderUnavailableError extends Error {
+  constructor() {
+    super('WA message sender is unavailable for the configured transport')
+    this.name = 'WaMessageSenderUnavailableError'
+  }
+}
+
+export class UnavailableMessageSender implements MessageSender {
+  async send(_payload: SendMessagePayload): Promise<SendMessageResult> {
+    throw new WaMessageSenderUnavailableError()
+  }
+}
+
 export class MockMessageSender implements MessageSender {
   readonly sentPayloads: SendMessagePayload[] = []
 

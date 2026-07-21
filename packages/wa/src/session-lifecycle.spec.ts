@@ -1870,6 +1870,28 @@ describe('WaSessionLifecycleService', () => {
     await expect(registry.getOwner('instance-6')).resolves.toBe('worker-a')
   })
 
+  it('reconnects an explicitly started disconnected session owned by the same worker', async () => {
+    const { lifecycle, registry, sessions } = createHarness('worker-a')
+    const connect = vi.spyOn(sessions, 'connect')
+    await lifecycle.start('instance-expired-qr')
+    sessions.seed({
+      instanceId: 'instance-expired-qr',
+      status: 'disconnected',
+      hasAuthState: false,
+      logoutCount: 0,
+      lastDisconnectReason: 'connection_closed',
+    })
+
+    const state = await lifecycle.start('instance-expired-qr')
+
+    expect(registry.claims).toEqual([
+      { instanceId: 'instance-expired-qr', workerId: 'worker-a', ttlMs },
+    ])
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(state.status).toBe('connected')
+    await expect(registry.getOwner('instance-expired-qr')).resolves.toBe('worker-a')
+  })
+
   it('closes an expired active epoch before the same worker claims a fresh epoch', async () => {
     const { lifecycle, registry, sessions, statuses } = createHarness('worker-a')
     const close = vi.spyOn(sessions, 'closeTransport')

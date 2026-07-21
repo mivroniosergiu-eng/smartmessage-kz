@@ -340,6 +340,15 @@ export class BaileysSessionManager implements SessionManager {
       onDisconnected: async (event) => {
         const runtime = this.currentRuntime(instanceId, generation)
         if (!runtime) return
+        try {
+          runtime.state = {
+            ...runtime.state,
+            hasAuthState:
+              runtime.state.hasAuthState || (await this.authStateStore.has(instanceId)),
+          }
+        } catch (error: unknown) {
+          await this.dispatchError(instanceId, runtime.state, error)
+        }
         retiredState = await this.recordDisconnect(
           instanceId,
           runtime,

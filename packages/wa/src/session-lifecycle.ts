@@ -31,6 +31,7 @@ interface ActiveSupervision {
   heartbeatInFlight?: Promise<void>
   reconciliationInFlight?: Promise<void>
   reconciliationRequested: boolean
+  forceReconnectRequested: boolean
   shutdownInFlight?: Promise<void>
   starting: boolean
   stopping: boolean
@@ -256,9 +257,13 @@ export class WaSessionLifecycleService {
     if (firstError !== undefined) throw firstError
   }
 
-  private requestReconciliation(supervision: ActiveSupervision): Promise<void> {
+  private requestReconciliation(
+    supervision: ActiveSupervision,
+    forceReconnect = false,
+  ): Promise<void> {
     if (!this.isTracked(supervision)) return Promise.resolve()
     supervision.reconciliationRequested = true
+    if (forceReconnect) supervision.forceReconnectRequested = true
     if (!this.isActive(supervision) || supervision.starting) return Promise.resolve()
     if (supervision.reconciliationInFlight) return supervision.reconciliationInFlight
 
@@ -277,8 +282,10 @@ export class WaSessionLifecycleService {
   private async drainReconciliation(supervision: ActiveSupervision): Promise<void> {
     while (this.isActive(supervision) && supervision.reconciliationRequested) {
       supervision.reconciliationRequested = false
+      const forceReconnect = supervision.forceReconnectRequested
+      supervision.forceReconnectRequested = false
       try {
-        await this.runReconciliation(supervision)
+        await this.runReconciliation(supervision, forceReconnect)
       } catch {
         // Runtime/status reads are retried by a newer event or on the next watchdog tick.
       }
@@ -427,6 +434,7 @@ export class WaSessionLifecycleService {
         stopping: false,
         stopped: false,
         reconciliationRequested: false,
+        forceReconnectRequested: false,
       }
       this.active.set(instanceId, supervision)
       this.armSupervision(supervision)
@@ -594,13 +602,21 @@ export class WaSessionLifecycleService {
         throw error
       }
       if (renewed) {
-        const state = await this.sessionManager.getState(instanceId)
+        let state = await this.sessionManager.getState(instanceId)
         if (!(await this.persistState(existing, state))) {
           throw new WaOwnershipError(
             instanceId,
             this.workerId,
             await this.ownerRegistry.getOwner(instanceId),
           )
+        }
+        if (state.status === 'disconnected') {
+          await existing.reconciliationInFlight
+          state = await this.sessionManager.getState(instanceId)
+          if (state.status === 'disconnected') {
+            await this.requestReconciliation(existing, true)
+            state = await this.sessionManager.getState(instanceId)
+          }
         }
         return state
       }
@@ -616,6 +632,7 @@ export class WaSessionLifecycleService {
       stopping: false,
       stopped: false,
       reconciliationRequested: false,
+      forceReconnectRequested: false,
     }
     this.active.set(instanceId, supervision)
     this.armSupervision(supervision)
@@ -784,7 +801,10 @@ export class WaSessionLifecycleService {
     }
   }
 
-  private async runReconciliation(supervision: ActiveSupervision): Promise<void> {
+  private async runReconciliation(
+    supervision: ActiveSupervision,
+    forceReconnect = false,
+  ): Promise<void> {
     if (!(await this.observeOwnership(supervision))) return
     const state = await this.sessionManager.getState(supervision.instanceId)
     if (!this.isActive(supervision)) return
@@ -815,7 +835,8 @@ export class WaSessionLifecycleService {
       await this.finishTerminal(supervision)
       return
     }
-    if (!shouldReconnect(state)) return
+    if (!forceReconnect && !shouldReconnect(state)) return
+    if (state.status !== 'disconnected') return
 
     try {
       await this.markConnecting(supervision)

@@ -100,7 +100,9 @@
 
 **Перенести как:** `Contact.isValid` enum в Prisma-схеме (`ARCHITECTURE.md` §6). Валидация — BullMQ-очередь `validate-phone`, не поллинг. Один job на контакт (идемпотентный), round-robin по аккаунтам, таймаут на вызов.
 
-**Тест:** `validate-phone` queue-тесты (`TESTING.md` §11).
+**Реализовано в Фазе 1:** `packages/queue/src/index.ts` задаёт generic и owner-directed contracts; `apps/worker/src/wa/wa-phone-validation-job.processor.ts` выполняет DB-authoritative transitions, Redis round-robin и owner+epoch fence; `packages/wa/src/baileys-connector.ts` вызывает `onWhatsApp` только на активном сокете. Persistence adapter — `PrismaWaPhoneValidationRepository`; `Contact.waValidationRunId` защищает phone/run snapshot от stale completion и BullMQ terminal-failure reconciliation.
+
+**Тест:** queue contract, mock-Baileys integration, worker unit/failure reconciliation, PostgreSQL integration и реальный Redis/BullMQ validation smoke в `packages/queue/src/wa-phone-validation.spec.ts`, `apps/worker/src/wa/wa-phone-validation-job.processor.spec.ts`, `apps/worker/src/wa/prisma-wa-phone-validation.repository.spec.ts`, `apps/worker/src/wa/wa-phone-validation.integration.spec.ts` (`TESTING.md` §11).
 
 ### 1.5. Нормализация номеров и разбор JID
 **Донор:** `check_especials` (`common.js:319-348`) — исправление специфичных номеров; `get_phone(id, 'wid')` (`common.js:401-436`) — разбор JID `число:индекс@server`. Критично: без нормализации Baileys не доносит.
@@ -119,7 +121,7 @@
 ### 1.7. Унифицированный `auto_send` по провайдерам
 **Донор:** единая точка `auto_send(item)` (`waziper.js:2095`) → сборка payload по `type` → `process_send_message` (`:1759`) → три ветки: Cloud API (`:1769`), Evolution (`:1974`), Baileys (`:2059`).
 
-**Перенести как:** интерфейс `MessageSender` в `packages/wa` с реализациями `BaileysSender`, `CloudApiSender`, (опц. `EvolutionSender`). Стратегия выбирается per `WaAccount.loginType`. Доменная логика (`auto_send`-эквивалент) вызывает `sender.send(payload)`, не зная конкретного провайдера. Это упрощает тестирование (mock interface) и добавление новых провайдеров.
+**Перенести как:** интерфейс `MessageSender` в `packages/wa` с Baileys-реализацией на active owner socket; Cloud API/Evolution остаются будущими слотами. Фаза 1 вызывает `sender.send(payload)` только через exact owner queue, с deterministic message id и `(teamId,idempotencyKey)` `MessageLog` fence. Доменная логика не знает конкретного провайдера; mock interface покрывает безопасный QA без реальной отправки.
 
 **Тест:** контрактный тест на интерфейс + по реализации с mock HTTP.
 
