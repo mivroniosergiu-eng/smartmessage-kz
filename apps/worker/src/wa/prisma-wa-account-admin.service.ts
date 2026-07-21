@@ -28,6 +28,13 @@ export class WaAccountAdminTeamNotFoundError extends Error {
   }
 }
 
+export class WaAccountAdminLimitExceededError extends Error {
+  constructor(readonly teamId: string, readonly maxAccounts: number) {
+    super(`WA account admin create failed: team ${teamId} reached its ${maxAccounts}-account limit`)
+    this.name = 'WaAccountAdminLimitExceededError'
+  }
+}
+
 @Injectable()
 export class PrismaWaAccountAdminService {
   constructor(private readonly db: PrismaClient = prisma) {}
@@ -36,37 +43,39 @@ export class PrismaWaAccountAdminService {
     const teamId = normalizeTeamId(input.teamId)
     const instanceId = normalizeInstanceId(input.instanceId)
 
-    const team = await this.db.team.findUnique({
-      where: { id: teamId },
-      select: { id: true },
-    })
-    if (!team) {
-      throw new WaAccountAdminTeamNotFoundError(teamId)
-    }
+    const create = async (db: Pick<PrismaClient, 'team' | 'waAccount'>): Promise<WaAccount> => {
+      const team = await db.team.findUnique({
+        where: { id: teamId },
+        select: { id: true, permissions: { select: { maxWhatsappAccounts: true } } },
+      })
+      if (!team) throw new WaAccountAdminTeamNotFoundError(teamId)
 
-    const existingAccount = await this.db.waAccount.findUnique({
-      where: { instanceId },
-      select: { instanceId: true },
-    })
-    if (existingAccount) {
-      throw new WaAccountAdminDuplicateInstanceError(instanceId)
+      const existingAccount = await db.waAccount.findUnique({
+        where: { instanceId },
+        select: { instanceId: true },
+      })
+      if (existingAccount) throw new WaAccountAdminDuplicateInstanceError(instanceId)
+
+      const maxAccounts = team.permissions?.maxWhatsappAccounts ?? 1
+      const accountCount = await db.waAccount.count({ where: { teamId } })
+      if (accountCount >= maxAccounts) {
+        throw new WaAccountAdminLimitExceededError(teamId, maxAccounts)
+      }
+
+      return db.waAccount.create({ data: { teamId, instanceId } })
     }
 
     try {
-      return await this.db.waAccount.create({
-        data: {
-          teamId,
-          instanceId,
-        },
-      })
+      if (typeof this.db.$transaction === 'function') {
+        return await this.db.$transaction(
+          (tx) => create(tx),
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        )
+      }
+      return await create(this.db)
     } catch (error) {
-      if (isPrismaError(error, 'P2002')) {
-        throw new WaAccountAdminDuplicateInstanceError(instanceId)
-      }
-      if (isPrismaError(error, 'P2003')) {
-        throw new WaAccountAdminTeamNotFoundError(teamId)
-      }
-
+      if (isPrismaError(error, 'P2002')) throw new WaAccountAdminDuplicateInstanceError(instanceId)
+      if (isPrismaError(error, 'P2003')) throw new WaAccountAdminTeamNotFoundError(teamId)
       throw error
     }
   }

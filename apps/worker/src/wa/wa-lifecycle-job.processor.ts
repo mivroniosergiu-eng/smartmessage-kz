@@ -81,12 +81,16 @@ export class WaLifecycleOwnerUnavailableError extends Error {
 @Injectable()
 export class WaLifecycleJobProcessor {
   constructor(
+    @Inject(WaLifecycleCommandService)
     private readonly commands: WaLifecycleCommandService,
     @Inject(WA_OWNER_REGISTRY)
     private readonly ownerRegistry: Pick<OwnerRegistry, 'getOwnership'>,
     @Inject(WA_WORKER_ID) private readonly workerId: string,
+    @Inject(WaLifecycleQueueService)
     private readonly queueService: WaLifecycleQueueService,
+    @Inject(PrismaWaAccountCommandGuard)
     private readonly commandGuard: PrismaWaAccountCommandGuard,
+    @Inject(PrismaWaRestrictedRecoveryService)
     private readonly restrictedRecovery: PrismaWaRestrictedRecoveryService,
   ) {}
 

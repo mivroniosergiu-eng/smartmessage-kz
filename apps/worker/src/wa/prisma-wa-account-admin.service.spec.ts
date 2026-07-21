@@ -6,6 +6,7 @@ import {
   PrismaWaAccountAdminService,
   WaAccountAdminDuplicateInstanceError,
   WaAccountAdminInvalidInputError,
+  WaAccountAdminLimitExceededError,
   WaAccountAdminTeamNotFoundError,
 } from './prisma-wa-account-admin.service'
 
@@ -22,6 +23,12 @@ describe('PrismaWaAccountAdminService', () => {
       data: [
         { id: teamId, name: 'WA Account Admin Team' },
         { id: otherTeamId, name: 'WA Account Admin Other Team' },
+      ],
+    })
+    await prisma.permissions.createMany({
+      data: [
+        { teamId, maxWhatsappAccounts: 10 },
+        { teamId: otherTeamId, maxWhatsappAccounts: 10 },
       ],
     })
   })
@@ -67,11 +74,21 @@ describe('PrismaWaAccountAdminService', () => {
     await expect(prisma.waAccount.findMany({ where: { instanceId: 'admin-instance-missing-team' } })).resolves.toHaveLength(0)
   })
 
+  it('blocks creation when the team reaches its plan limit', async () => {
+    await prisma.permissions.update({ where: { teamId }, data: { maxWhatsappAccounts: 1 } })
+    await service.createAccount({ teamId, instanceId: 'admin-instance-limit-existing' })
+
+    await expect(
+      service.createAccount({ teamId, instanceId: 'admin-instance-limit-next' }),
+    ).rejects.toBeInstanceOf(WaAccountAdminLimitExceededError)
+  })
+
   it('maps a Prisma P2002 race to the same explicit duplicate error', async () => {
     const db = {
       team: { findUnique: vi.fn(async () => ({ id: teamId })) },
       waAccount: {
         findUnique: vi.fn(async () => null),
+        count: vi.fn(async () => 0),
         create: vi.fn(async () => {
           throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
             code: 'P2002',
@@ -137,6 +154,7 @@ describe('PrismaWaAccountAdminService', () => {
       team: { findUnique: vi.fn(async () => ({ id: teamId })) },
       waAccount: {
         findUnique: vi.fn(async () => null),
+        count: vi.fn(async () => 0),
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
           id: 'created-account',
           ...data,

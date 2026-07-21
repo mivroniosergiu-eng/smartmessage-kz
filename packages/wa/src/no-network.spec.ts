@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -29,7 +30,7 @@ describe('wa mocks', () => {
     })
     await sessions.connect('instance-1')
     await sessions.handleDisconnect('instance-1', 'transient')
-    await validator.validate({ phone: 'fixture-recipient-alpha' })
+    await validator.validate({ instanceId: 'instance-1', phone: 'fixture-recipient-alpha' })
 
     expect(fetchSpy).not.toHaveBeenCalled()
   })
@@ -61,6 +62,18 @@ describe('wa mocks', () => {
       expect(source.contents, source.filePath).not.toContain('wa-sessions')
       expect(source.contents, source.filePath).not.toMatch(/['"][^'"\r\n]*\.session[^'"\r\n]*['"]/)
     }
+  })
+
+  it('keeps transitive Signal session secrets out of console logging', async () => {
+    const requireFromWa = createRequire(import.meta.url)
+    const baileysEntry = requireFromWa.resolve('@whiskeysockets/baileys')
+    const requireFromBaileys = createRequire(baileysEntry)
+    const sessionRecordPath = requireFromBaileys.resolve('libsignal/src/session_record')
+    const sessionRecordSource = await readFile(sessionRecordPath, 'utf8')
+
+    expect(sessionRecordSource).not.toMatch(
+      /console\.(?:info|warn)\([^\n]*,\s*(?:session|oldestSession)\s*\)/,
+    )
   })
 })
 

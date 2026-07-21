@@ -121,7 +121,18 @@ describe('Auth Server Actions', () => {
 
     const result = await registerAction(null, formData)
 
-    expect(result?.error).toBe('РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ С„РѕСЂРјР°С‚ email')
+    expect(result?.error).toBe('Некорректный формат email')
+  })
+
+  it('registerAction returns a readable validation error for a short password', async () => {
+    const formData = new FormData()
+    formData.append('email', testEmail)
+    formData.append('password', '1234')
+    formData.append('teamName', testTeamName)
+
+    const result = await registerAction(null, formData)
+
+    expect(result?.error).toBe('Пароль должен содержать не менее 6 символов')
   })
 
   it('registerAction handles P2002 as duplicate email', async () => {
@@ -134,7 +145,7 @@ describe('Auth Server Actions', () => {
 
     const result = await registerAction(null, formData)
 
-    expect(result?.error).toBe('РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ СЃ С‚Р°РєРёРј email СѓР¶Рµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅ')
+    expect(result?.error).toBe('Пользователь с таким email уже зарегистрирован')
     transactionSpy.mockRestore()
   })
 
@@ -182,7 +193,7 @@ describe('Auth Server Actions', () => {
 
     const result = await loginAction(null, formData)
 
-    expect(result?.error).toBe('РќРµРІРµСЂРЅС‹Р№ email РёР»Рё РїР°СЂРѕР»СЊ')
+    expect(result?.error).toBe('Неверный email или пароль')
     expect(mockCookies.set).not.toHaveBeenCalled()
   })
 

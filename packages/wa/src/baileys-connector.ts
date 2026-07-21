@@ -1,12 +1,13 @@
-import makeWASocket, {
-  DisconnectReason,
-  type AuthenticationState,
-  type BaileysEventMap,
-  type SignalDataSet,
-  type SignalDataTypeMap,
-  type UserFacingSocketConfig,
-  type WASocket,
+import type {
+  AuthenticationState,
+  BaileysEventMap,
+  SignalDataSet,
+  SignalDataTypeMap,
+  UserFacingSocketConfig,
+  WASocket,
 } from '@whiskeysockets/baileys'
+import { normalizePhone } from '@smartmessage/shared'
+import { createHash } from 'node:crypto'
 
 import type { WaAuthStateJsonValue, WaAuthStateStore } from './auth-state'
 import {
@@ -19,11 +20,14 @@ import type {
   BaileysTransportConnector,
 } from './baileys-transport-adapter'
 import { mapBaileysMessageUpdates, mapBaileysMessagesUpsert } from './receiver'
+import type { PhoneValidator, ValidatePhonePayload, ValidatePhoneResult } from './phone-validator'
+import type { MessageSender, SendMessagePayload, SendMessageResult } from './sender'
 import { createWaRestrictedUntil, type SessionState, type WaDisconnectReason } from './session'
 import {
   WaTransportAlreadyConnectedError,
   WaTransportCloseTimeoutError,
   WaTransportNotConnectedError,
+  WaTransportOperationDrainTimeoutError,
   WaTransportOperationInProgressError,
   type WaTransportCallbacks,
   type WaTransportSession,
@@ -34,6 +38,16 @@ const DEFAULT_TRANSPORT_CLOSE_TIMEOUT_MS = 10_000
 const BINARY_JSON_MARKER = '__smartmessageWaBinary'
 const HTTP_TOO_MANY_REQUESTS = 429
 
+type BaileysModule = typeof import('@whiskeysockets/baileys')
+type BaileysDisconnectReasons = BaileysModule['DisconnectReason']
+
+let baileysModulePromise: Promise<BaileysModule> | undefined
+
+function loadBaileysModule(): Promise<BaileysModule> {
+  baileysModulePromise ??= import('@whiskeysockets/baileys')
+  return baileysModulePromise
+}
+
 export interface BaileysSocketTransportConnectorOptions {
   now?: () => Date
   qrTtlMs?: number
@@ -43,6 +57,7 @@ export interface BaileysSocketTransportConnectorOptions {
 
 interface ActiveBaileysTransport {
   socket: WASocket
+  disconnectReasons: BaileysDisconnectReasons
   callbacks?: WaTransportCallbacks
   auth: StoreBackedAuthenticationState
   phase: 'active' | 'closing' | 'logging_out' | 'remote_closing' | 'terminal_failed'
@@ -57,7 +72,9 @@ interface StoreBackedAuthenticationState extends AuthenticationState {
   drain(): Promise<void>
 }
 
-export class BaileysSocketTransportConnector implements BaileysTransportConnector {
+export class BaileysSocketTransportConnector
+  implements BaileysTransportConnector, PhoneValidator, MessageSender
+{
   private readonly activeTransports = new Map<string, ActiveBaileysTransport>()
   private readonly openingTransports = new Set<string>()
   private readonly terminalTransports = new Set<string>()
@@ -97,7 +114,12 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       }
       const persistedState = await readBaileysAuthState(instanceId, this.authStateStore)
       const hasAuthState = await this.authStateStore.has(instanceId)
+      const baileys = await loadBaileysModule()
+      if (Object.keys(persistedState.creds).length === 0) {
+        persistedState.creds = encodeJsonObject(baileys.initAuthCreds())
+      }
       const auth = createStoreBackedAuthState(instanceId, persistedState, this.authStateStore)
+      const makeWASocket = baileys.default
       const socket = makeWASocket({
         ...this.socketConfig,
         auth,
@@ -110,6 +132,7 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
 
       const active: ActiveBaileysTransport = {
         socket,
+        disconnectReasons: baileys.DisconnectReason,
         callbacks: input.callbacks,
         auth,
         phase: 'active',
@@ -148,16 +171,69 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     }
   }
 
+  async validate(payload: ValidatePhonePayload): Promise<ValidatePhoneResult> {
+    const instanceId = normalizeInstanceId(payload.instanceId)
+    const active = this.activeTransports.get(instanceId)
+    if (!active || active.phase !== 'active') {
+      throw new WaTransportNotConnectedError(instanceId)
+    }
+
+    const phone = normalizePhone(payload.phone)
+    const jid = `${phone.slice(1)}@s.whatsapp.net`
+    return this.runCurrentTransportOperation(instanceId, active, async () => {
+      const matches = await active.socket.onWhatsApp(jid)
+      const confirmed = matches?.some((match) => match.exists === true) ?? false
+
+      return {
+        instanceId,
+        phone,
+        status: confirmed ? 'confirmed' : 'not_on_whatsapp',
+      }
+    })
+  }
+
+  async send(payload: SendMessagePayload): Promise<SendMessageResult> {
+    const instanceId = normalizeInstanceId(payload.instanceId)
+    const active = this.activeTransports.get(instanceId)
+    if (!active || active.phase !== 'active') {
+      throw new WaTransportNotConnectedError(instanceId)
+    }
+    if (payload.kind !== 'text') throw new TypeError('Unsupported WA message kind')
+    const text = payload.text.trim()
+    const idempotencyKey = payload.idempotencyKey.trim()
+    if (!text || !idempotencyKey) throw new TypeError('WA text and idempotencyKey are required')
+
+    const phone = normalizePhone(payload.recipientPhone)
+    const jid = `${phone.slice(1)}@s.whatsapp.net`
+    const deterministicMessageId = createHash('sha256')
+      .update(`${instanceId}\u0000${phone}\u0000${idempotencyKey}`)
+      .digest('hex')
+      .slice(0, 32)
+      .toUpperCase()
+    return this.runCurrentTransportOperation(instanceId, active, async () => {
+      const sent = await active.socket.sendMessage(
+        jid,
+        { text },
+        { messageId: deterministicMessageId },
+      )
+
+      return {
+        messageId: sent?.key.id ?? deterministicMessageId,
+        status: 'accepted',
+      }
+    })
+  }
+
   async closeTransport(instanceId: string): Promise<WaTransportSession> {
     const normalizedInstanceId = normalizeInstanceId(instanceId)
     const active = this.reserveTerminalTransport(normalizedInstanceId, 'closing')
 
-    await active.eventTail
+    await this.drainTransportOperations(normalizedInstanceId, active)
     active.auth.deactivate()
     let persistenceError: unknown
     let hasPersistenceError = false
     try {
-      await active.auth.drain()
+      await this.completeTransportOperation(normalizedInstanceId, active.auth.drain())
     } catch (error: unknown) {
       persistenceError = error
       hasPersistenceError = true
@@ -174,7 +250,8 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       hasCloseError = true
     }
 
-    if (hasCloseError) {
+    const persistenceTimedOut = isOperationDrainTimeout(persistenceError)
+    if (hasCloseError || persistenceTimedOut) {
       active.phase = 'terminal_failed'
     } else {
       this.removeActiveTransport(normalizedInstanceId, active.socket)
@@ -203,12 +280,12 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     const normalizedInstanceId = normalizeInstanceId(instanceId)
     const active = this.reserveTerminalTransport(normalizedInstanceId, 'logging_out')
 
-    await active.eventTail
+    await this.drainTransportOperations(normalizedInstanceId, active)
     active.auth.deactivate()
     let persistenceError: unknown
     let hasPersistenceError = false
     try {
-      await active.auth.drain()
+      await this.completeTransportOperation(normalizedInstanceId, active.auth.drain())
     } catch (error: unknown) {
       persistenceError = error
       hasPersistenceError = true
@@ -217,7 +294,7 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     let logoutError: unknown
     let hasLogoutError = false
     try {
-      await active.socket.logout()
+      await this.completeTransportOperation(normalizedInstanceId, active.socket.logout())
     } catch (error: unknown) {
       logoutError = error
       hasLogoutError = true
@@ -238,18 +315,23 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       hasCloseError = true
     }
 
+    const persistenceTimedOut = isOperationDrainTimeout(persistenceError)
     let clearError: unknown
     let hasClearError = false
-    try {
-      await this.authStateStore.clear(normalizedInstanceId)
-      this.pendingAuthClears.delete(normalizedInstanceId)
-    } catch (error: unknown) {
-      clearError = error
-      hasClearError = true
+    if (persistenceTimedOut) {
       this.pendingAuthClears.add(normalizedInstanceId)
+    } else {
+      try {
+        await this.authStateStore.clear(normalizedInstanceId)
+        this.pendingAuthClears.delete(normalizedInstanceId)
+      } catch (error: unknown) {
+        clearError = error
+        hasClearError = true
+        this.pendingAuthClears.add(normalizedInstanceId)
+      }
     }
 
-    if (hasCloseError) {
+    if (hasCloseError || persistenceTimedOut) {
       active.phase = 'terminal_failed'
     } else {
       this.removeActiveTransport(normalizedInstanceId, active.socket)
@@ -270,6 +352,7 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       throw closeError
     }
     if (hasLogoutError) throw logoutError
+    if (persistenceTimedOut) throw persistenceError
     if (hasClearError) throw clearError
 
     return {
@@ -306,6 +389,16 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     if (update.connection === 'close') {
       active.phase = 'remote_closing'
       this.terminalTransports.add(instanceId)
+      const pendingOperations = active.eventTail
+      const terminalUpdate = this.completeTransportOperation(instanceId, pendingOperations)
+        .catch((error: unknown) => {
+          void this.reportError(instanceId, active.callbacks, error)
+        })
+        .then(() => this.handleConnectionUpdate(instanceId, active, update))
+      active.eventTail = terminalUpdate.catch((error: unknown) =>
+        this.reportError(instanceId, active.callbacks, error),
+      )
+      return
     }
 
     this.enqueueTransportEvent(instanceId, active, () =>
@@ -323,6 +416,23 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       .catch((error: unknown) => this.reportError(instanceId, active.callbacks, error))
   }
 
+  private runCurrentTransportOperation<T>(
+    instanceId: string,
+    active: ActiveBaileysTransport,
+    handler: () => Promise<T>,
+  ): Promise<T> {
+    if (!this.isCurrentTransport(instanceId, active) || active.phase !== 'active') {
+      throw new WaTransportNotConnectedError(instanceId)
+    }
+
+    const operation = active.eventTail.then(handler)
+    active.eventTail = operation.then(
+      () => undefined,
+      () => undefined,
+    )
+    return operation
+  }
+
   private async reportError(
     instanceId: string,
     callbacks: BaileysTransportConnectInput['callbacks'],
@@ -337,6 +447,36 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
       console.error(`[wa:${instanceId}] unhandled transport error`, error)
     } catch {
       // Error reporting must not create an unhandled rejection.
+    }
+  }
+
+  private async drainTransportOperations(
+    instanceId: string,
+    active: ActiveBaileysTransport,
+  ): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    let timedOut = false
+    try {
+      await Promise.race([
+        active.eventTail,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(() => {
+            timedOut = true
+            resolve()
+          }, this.transportCloseTimeoutMs)
+          timeout.unref?.()
+        }),
+      ])
+    } finally {
+      if (timeout) clearTimeout(timeout)
+    }
+
+    if (timedOut) {
+      void this.reportError(
+        instanceId,
+        active.callbacks,
+        new WaTransportOperationDrainTimeoutError(instanceId, this.transportCloseTimeoutMs),
+      )
     }
   }
 
@@ -358,6 +498,25 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
 
     try {
       await Promise.race([closeOperation, timeoutOperation])
+    } finally {
+      if (timeout) clearTimeout(timeout)
+    }
+  }
+
+  private async completeTransportOperation<T>(
+    instanceId: string,
+    operation: Promise<T>,
+  ): Promise<T> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        reject(new WaTransportOperationDrainTimeoutError(instanceId, this.transportCloseTimeoutMs))
+      }, this.transportCloseTimeoutMs)
+      timeout.unref?.()
+    })
+
+    try {
+      return await Promise.race([operation, deadline])
     } finally {
       if (timeout) clearTimeout(timeout)
     }
@@ -427,7 +586,10 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     if (update.connection !== 'close') return
 
     const disconnectError = update.lastDisconnect?.error
-    const reason = disconnectReasonFromStatusCode(getDisconnectStatusCode(disconnectError))
+    const reason = disconnectReasonFromStatusCode(
+      getDisconnectStatusCode(disconnectError),
+      active.disconnectReasons,
+    )
     const restrictedUntil =
       reason === 'restricted'
         ? createWaRestrictedUntil(this.now(), getRetryAfterMs(disconnectError, this.now()))
@@ -439,7 +601,7 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
     try {
       active.auth.deactivate()
       try {
-        await active.auth.drain()
+        await this.completeTransportOperation(instanceId, active.auth.drain())
       } catch (error: unknown) {
         persistenceError = error
         hasPersistenceError = true
@@ -455,7 +617,11 @@ export class BaileysSocketTransportConnector implements BaileysTransportConnecto
         }
       }
     } finally {
-      this.removeActiveTransport(instanceId, active.socket)
+      if (isOperationDrainTimeout(persistenceError)) {
+        active.phase = 'terminal_failed'
+      } else {
+        this.removeActiveTransport(instanceId, active.socket)
+      }
       this.terminalTransports.delete(instanceId)
     }
 
@@ -580,6 +746,10 @@ function normalizeInstanceId(instanceId: string): string {
   return normalized
 }
 
+function isOperationDrainTimeout(error: unknown): error is WaTransportOperationDrainTimeoutError {
+  return error instanceof WaTransportOperationDrainTimeoutError
+}
+
 function normalizeQrTtlMs(qrTtlMs: number): number {
   if (!Number.isSafeInteger(qrTtlMs) || qrTtlMs <= 0) {
     throw new RangeError('qrTtlMs must be a positive safe integer')
@@ -596,12 +766,15 @@ function normalizeTransportCloseTimeoutMs(timeoutMs: number): number {
   return timeoutMs
 }
 
-function disconnectReasonFromStatusCode(statusCode: number | undefined): WaDisconnectReason {
-  if (statusCode === DisconnectReason.loggedOut) return 'logged_out'
-  if (statusCode === DisconnectReason.forbidden) return 'banned'
+function disconnectReasonFromStatusCode(
+  statusCode: number | undefined,
+  disconnectReasons: BaileysDisconnectReasons,
+): WaDisconnectReason {
+  if (statusCode === disconnectReasons.loggedOut) return 'logged_out'
+  if (statusCode === disconnectReasons.forbidden) return 'banned'
   if (statusCode === HTTP_TOO_MANY_REQUESTS) return 'restricted'
-  if (statusCode === DisconnectReason.restartRequired) return 'restart_required'
-  if (statusCode === DisconnectReason.connectionClosed) return 'connection_closed'
+  if (statusCode === disconnectReasons.restartRequired) return 'restart_required'
+  if (statusCode === disconnectReasons.connectionClosed) return 'connection_closed'
 
   return 'transient'
 }
@@ -656,6 +829,13 @@ function encodeJsonValue(value: unknown): WaAuthStateJsonValue {
     return value
   }
 
+  if (Buffer.isBuffer(value)) {
+    return {
+      [BINARY_JSON_MARKER]: 'buffer',
+      data: Array.from(value),
+    }
+  }
+
   if (value instanceof Uint8Array) {
     return {
       [BINARY_JSON_MARKER]: 'uint8array',
@@ -690,6 +870,10 @@ function decodeJsonValue(value: WaAuthStateJsonValue): unknown {
   if (Array.isArray(value)) return value.map((item) => decodeJsonValue(item))
 
   if (isObject(value)) {
+    if (value[BINARY_JSON_MARKER] === 'buffer' && Array.isArray(value.data)) {
+      return Buffer.from(value.data as number[])
+    }
+
     if (value[BINARY_JSON_MARKER] === 'uint8array' && Array.isArray(value.data)) {
       return new Uint8Array(value.data as number[])
     }

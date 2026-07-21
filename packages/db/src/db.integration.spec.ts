@@ -5,15 +5,16 @@ const prisma = new PrismaClient()
 const A = 'itest-team-a'
 const B = 'itest-team-b'
 const C = 'itest-team-c'
+const D = 'itest-team-d'
 
 describe('multi-tenant isolation', () => {
   beforeAll(async () => {
-    await prisma.team.deleteMany({ where: { id: { in: [A, B, C] } } })
+    await prisma.team.deleteMany({ where: { id: { in: [A, B, C, D] } } })
     await prisma.team.create({ data: { id: A, name: 'A', leads: { create: { phone: '+77010000001', consentStatus: 'OPTED_IN' } } } })
     await prisma.team.create({ data: { id: B, name: 'B', leads: { create: { phone: '+77010000001', consentStatus: 'OPTED_IN' } } } })
   })
   afterAll(async () => {
-    await prisma.team.deleteMany({ where: { id: { in: [A, B, C] } } })
+    await prisma.team.deleteMany({ where: { id: { in: [A, B, C, D] } } })
     await prisma.$disconnect()
   })
   it('запрос лидов команды A не возвращает лидов команды B', async () => {
@@ -105,6 +106,7 @@ describe('multi-tenant isolation', () => {
         phone: '+77010000003',
         type: 'text',
         message: 'hello',
+        idempotencyKey: 'itest-message-log-1',
       },
     })
     await prisma.auditLog.create({
@@ -120,5 +122,29 @@ describe('multi-tenant isolation', () => {
     await expect(prisma.waSession.findMany({ where: { teamId: team.id } })).resolves.toHaveLength(0)
     await expect(prisma.messageLog.findMany({ where: { teamId: team.id } })).resolves.toHaveLength(0)
     await expect(prisma.auditLog.findMany({ where: { teamId: team.id } })).resolves.toHaveLength(0)
+  })
+
+  it('persists the durable DISPATCHING fence independently from QUEUED', async () => {
+    const attemptedAt = new Date('2026-07-22T12:00:00.000Z')
+    await prisma.team.create({ data: { id: D, name: 'D' } })
+    await prisma.waAccount.create({
+      data: { teamId: D, instanceId: 'itest-instance-d' },
+    })
+
+    const log = await prisma.messageLog.create({
+      data: {
+        teamId: D,
+        instanceId: 'itest-instance-d',
+        phone: '+77010000004',
+        type: 'text',
+        message: 'dispatch fence',
+        idempotencyKey: 'itest-message-log-dispatching',
+        status: 'DISPATCHING',
+        dispatchAttemptedAt: attemptedAt,
+      },
+    })
+
+    expect(log.status).toBe('DISPATCHING')
+    expect(log.dispatchAttemptedAt).toEqual(attemptedAt)
   })
 })

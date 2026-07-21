@@ -72,6 +72,33 @@ describe('WaWorkerIdentityLossSupervisor', () => {
     expect(terminate).toHaveBeenCalledWith(loss)
   })
 
+  it('also stops registered command consumers before terminating', async () => {
+    const events: string[] = []
+    const sharedWorker = createWorker('shared', events)
+    const ownerWorker = createWorker('owner', events)
+    const validationWorker = createWorker('validation', events)
+    const lifecycle = { shutdownAll: vi.fn(async () => events.push('sessions')) }
+    const supervisor = new WaWorkerIdentityLossSupervisor(
+      sharedWorker,
+      ownerWorker,
+      lifecycle,
+      vi.fn(() => events.push('terminate')),
+    ).addIntakeWorkers(validationWorker)
+
+    await supervisor.reportLoss(new Error('identity lost'))
+
+    expect(events).toEqual([
+      'pause:shared:true',
+      'pause:owner:true',
+      'pause:validation:true',
+      'sessions',
+      'close:shared:true',
+      'close:owner:true',
+      'close:validation:true',
+      'terminate',
+    ])
+  })
+
   it('does not let a never-settling pause delay session shutdown or forced worker close', async () => {
     const events: string[] = []
     const never = new Promise<void>(() => undefined)

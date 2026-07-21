@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Inject, Injectable } from '@nestjs/common'
 import {
   LOGOUT_WA_INSTANCE_JOB_NAME,
   RENEW_WA_INSTANCE_JOB_NAME,
@@ -12,7 +12,9 @@ import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
 @Injectable()
 export class WaLifecycleCommandQueueService {
   constructor(
+    @Inject(PrismaWaAccountCommandGuard)
     private readonly commandGuard: PrismaWaAccountCommandGuard,
+    @Inject(WaLifecycleQueueService)
     private readonly queueService: WaLifecycleQueueService,
   ) {}
 

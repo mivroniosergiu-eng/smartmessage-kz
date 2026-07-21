@@ -2,6 +2,31 @@ packages:
   - 'apps/*'
   - 'packages/*'
 
+allowBuilds:
+  '@nestjs/core': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  '@swc/core': true
+  '@whiskeysockets/baileys': false
+  esbuild: true
+  msgpackr-extract: true
+  prisma: true
+  protobufjs: false
+  puppeteer: false
+  unrs-resolver: false
+
+ignoredBuiltDependencies:
+  - '@whiskeysockets/baileys'
+  - protobufjs
+  - puppeteer
+  - unrs-resolver
+
+onlyBuiltDependencies:
+  - esbuild
+  - prisma
+  - '@prisma/client'
+  - '@prisma/engines'
+
 overrides:
   ioredis: 5.11.1
 
@@ -10,30 +35,7 @@ packageExtensions:
     peerDependenciesMeta:
       sharp:
         optional: true
-
-onlyBuiltDependencies:
-  - esbuild
-  - prisma
-  - '@prisma/client'
-  - '@prisma/engines'
-
-ignoredBuiltDependencies:
-  - '@whiskeysockets/baileys'
-  - protobufjs
-  - puppeteer
-  - unrs-resolver
+patchedDependencies:
+  libsignal@6.0.0: patches/libsignal@6.0.0.patch
 
 verifyDepsBeforeRun: false
-
-allowBuilds:
-  '@whiskeysockets/baileys': false
-  '@nestjs/core': true
-  '@prisma/client': true
-  '@prisma/engines': true
-  '@swc/core': true
-  esbuild: true
-  msgpackr-extract: true
-  prisma: true
-  puppeteer: false
-  protobufjs: false
-  unrs-resolver: false

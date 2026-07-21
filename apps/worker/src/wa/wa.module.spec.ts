@@ -9,11 +9,18 @@ import {
   START_WA_INSTANCE_JOB_NAME,
   STOP_WA_INSTANCE_JOB_NAME,
   WA_LIFECYCLE_QUEUE_NAME,
+  WA_PHONE_VALIDATION_QUEUE_NAME,
+  WA_SINGLE_SEND_QUEUE_NAME,
   createWaLifecycleOwnerQueueName,
+  createWaPhoneValidationOwnerQueueName,
+  createWaSingleSendOwnerQueueName,
 } from '@smartmessage/queue'
 import {
   BaileysSessionManager,
   InMemoryWaAuthStateStore,
+  MockSessionManager,
+  UnavailableMessageSender,
+  UnavailablePhoneValidator,
   WaSessionLifecycleService,
 } from '@smartmessage/wa'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -34,12 +41,25 @@ import {
   WA_WORKER_ID,
   WA_WORKER_IDENTITY_FATAL_HANDLER,
   WA_WORKER_IDENTITY_LEASE,
+  WA_PHONE_VALIDATOR,
+  WA_PHONE_VALIDATION_QUEUE,
+  WA_PHONE_VALIDATION_QUEUE_EVENTS_FACTORY,
+  WA_PHONE_VALIDATION_QUEUE_FACTORY,
+  WA_MESSAGE_SENDER,
+  WA_SINGLE_SEND_QUEUE,
+  WA_SINGLE_SEND_QUEUE_EVENTS_FACTORY,
+  WA_SINGLE_SEND_QUEUE_FACTORY,
 } from './wa.tokens'
 import {
   resolveWaWorkerId,
+  resolveWaSessionRuntimeMode,
   WaModule,
   WA_LIFECYCLE_WORKER,
   WA_OWNER_LIFECYCLE_WORKER,
+  WA_OWNER_PHONE_VALIDATION_WORKER,
+  WA_PHONE_VALIDATION_WORKER,
+  WA_SINGLE_SEND_WORKER,
+  WA_OWNER_SINGLE_SEND_WORKER,
 } from './wa.module'
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
 import { PrismaWaAccountCommandGuard } from './prisma-wa-account-command.guard'
@@ -53,16 +73,27 @@ import { WaLifecycleCommandService } from './wa-lifecycle-command.service'
 import { WaLifecycleCommandQueueService } from './wa-lifecycle-command-queue.service'
 import { WaLifecycleJobProcessor } from './wa-lifecycle-job.processor'
 import { WaLifecycleQueueService } from './wa-lifecycle-queue.service'
+import { PrismaWaPhoneValidationRepository } from './prisma-wa-phone-validation.repository'
+import { WaPhoneValidationAccountSelector } from './wa-phone-validation-account.selector'
+import { WaPhoneValidationJobProcessor } from './wa-phone-validation-job.processor'
+import { WaPhoneValidationQueueService } from './wa-phone-validation-queue.service'
 import { WaRestrictedRecoveryReconciler } from './wa-restricted-recovery-reconciler'
+import { PrismaWaSingleSendRepository } from './prisma-wa-single-send.repository'
+import { WaSingleSendJobProcessor } from './wa-single-send-job.processor'
+import { WaSingleSendQueueService } from './wa-single-send-queue.service'
+import { WaTerminalFailureReconciler } from './wa-terminal-failure-reconciler'
+import { WaOperationsController } from './wa-operations.controller'
 import { WaWorkerIdentityConflictError, WaWorkerIdentityLease } from './wa-worker-identity-lease'
 import { WaWorkerIdentityLossGate } from './wa-worker-identity-supervisor'
 
 const queueMock = vi.hoisted(() => {
   const queues: Array<{ close: ReturnType<typeof vi.fn>; add: ReturnType<typeof vi.fn> }> = []
   const workers: Array<{
+    name: string
     pause: ReturnType<typeof vi.fn>
     close: ReturnType<typeof vi.fn>
     run: ReturnType<typeof vi.fn>
+    on: ReturnType<typeof vi.fn>
   }> = []
 
   return {
@@ -76,12 +107,15 @@ const queueMock = vi.hoisted(() => {
       queues.push(queue)
       return queue
     }),
-    createWorker: vi.fn(() => {
-      const worker = {
+    createWorker: vi.fn((name: string) => {
+      const worker: (typeof workers)[number] = {
+        name,
         pause: vi.fn(async () => undefined),
         close: vi.fn(async () => undefined),
         run: vi.fn(async () => undefined),
+        on: vi.fn(),
       }
+      worker.on.mockReturnValue(worker)
       workers.push(worker)
       return worker
     }),
@@ -100,6 +134,7 @@ vi.mock('@smartmessage/queue', async (importOriginal) => {
 
 const originalWaWorkerId = process.env.WA_WORKER_ID
 const originalWaOwnerTtlMs = process.env.WA_OWNER_TTL_MS
+const originalWaSessionRuntime = process.env.WA_SESSION_RUNTIME
 
 describe('WaModule', () => {
   const prismaDisconnectSpy = vi.spyOn(prisma, '$disconnect').mockResolvedValue(undefined)
@@ -116,6 +151,7 @@ describe('WaModule', () => {
   it('assembles the WA lifecycle providers through Nest DI', async () => {
     delete process.env.WA_WORKER_ID
     delete process.env.WA_OWNER_TTL_MS
+    delete process.env.WA_SESSION_RUNTIME
 
     const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
       .overrideProvider(WA_REDIS_CONNECTION)
@@ -130,18 +166,48 @@ describe('WaModule', () => {
       )
       expect(moduleRef.get(WA_AUTH_STATE_STORE)).toBeInstanceOf(PrismaWaAuthStateRepository)
       expect(moduleRef.get(WA_SESSION_RUNTIME)).toBeDefined()
-      expect(moduleRef.get(WA_SESSION_MANAGER)).toBeInstanceOf(BaileysSessionManager)
+      expect(moduleRef.get(WA_SESSION_MANAGER)).toBeInstanceOf(MockSessionManager)
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
       expect(moduleRef.get(WA_SESSION_RUNTIME).sessionManager).toBe(
         moduleRef.get(WA_SESSION_MANAGER),
       )
       expect(moduleRef.get(WA_SESSION_RUNTIME).lifecycle).toBe(moduleRef.get(WA_SESSION_LIFECYCLE))
+      expect(moduleRef.get(WA_PHONE_VALIDATOR)).toBe(
+        moduleRef.get(WA_SESSION_RUNTIME).phoneValidator,
+      )
+      expect(moduleRef.get(WA_MESSAGE_SENDER)).toBe(moduleRef.get(WA_SESSION_RUNTIME).messageSender)
+      expect(moduleRef.get(WA_PHONE_VALIDATOR)).toBeInstanceOf(UnavailablePhoneValidator)
+      expect(moduleRef.get(WA_MESSAGE_SENDER)).toBeInstanceOf(UnavailableMessageSender)
+      expect(moduleRef.get(PrismaWaPhoneValidationRepository)).toBeInstanceOf(
+        PrismaWaPhoneValidationRepository,
+      )
+      expect(moduleRef.get(WaPhoneValidationAccountSelector)).toBeInstanceOf(
+        WaPhoneValidationAccountSelector,
+      )
+      expect(moduleRef.get(WaPhoneValidationQueueService)).toBeInstanceOf(
+        WaPhoneValidationQueueService,
+      )
+      expect(moduleRef.get(WaPhoneValidationJobProcessor)).toBeInstanceOf(
+        WaPhoneValidationJobProcessor,
+      )
+      expect(moduleRef.get(PrismaWaSingleSendRepository)).toBeInstanceOf(
+        PrismaWaSingleSendRepository,
+      )
+      expect(moduleRef.get(WaSingleSendQueueService)).toBeInstanceOf(WaSingleSendQueueService)
+      expect(moduleRef.get(WaSingleSendJobProcessor)).toBeInstanceOf(WaSingleSendJobProcessor)
+      expect(moduleRef.get(WaOperationsController)).toBeInstanceOf(WaOperationsController)
       expect(moduleRef.get(WaLifecycleCommandService)).toBeInstanceOf(WaLifecycleCommandService)
       expect(moduleRef.get(WaLifecycleJobProcessor)).toBeInstanceOf(WaLifecycleJobProcessor)
       expect(moduleRef.get(InternalWorkerApiGuard)).toBeInstanceOf(InternalWorkerApiGuard)
       expect(moduleRef.get(PrismaWaAccountCommandGuard)).toBeInstanceOf(PrismaWaAccountCommandGuard)
       expect(moduleRef.get(PrismaWaAccountAdminService)).toBeInstanceOf(PrismaWaAccountAdminService)
       expect(moduleRef.get(WaAccountController)).toBeInstanceOf(WaAccountController)
+      const accountController = moduleRef.get(WaAccountController) as unknown as {
+        adminService: unknown
+        commandQueue: unknown
+      }
+      expect(accountController.adminService).toBe(moduleRef.get(PrismaWaAccountAdminService))
+      expect(accountController.commandQueue).toBe(moduleRef.get(WaLifecycleCommandQueueService))
       expect(moduleRef.get(WaLifecycleQueueService)).toBeInstanceOf(WaLifecycleQueueService)
       expect(moduleRef.get(PrismaWaRestrictedRecoveryService)).toBeInstanceOf(
         PrismaWaRestrictedRecoveryService,
@@ -152,11 +218,29 @@ describe('WaModule', () => {
       expect(moduleRef.get(WaLifecycleCommandQueueService)).toBeInstanceOf(
         WaLifecycleCommandQueueService,
       )
-      expect(moduleRef.get(WA_LIFECYCLE_QUEUE)).toBe(queueMock.queues.at(-1))
-      expect(moduleRef.get(WA_LIFECYCLE_WORKER)).toBe(queueMock.workers[0])
-      expect(moduleRef.get(WA_OWNER_LIFECYCLE_WORKER)).toBe(queueMock.workers[1])
+      expect(moduleRef.get(WA_LIFECYCLE_QUEUE)).toBe(queueMock.queues[0])
+      expect(moduleRef.get(WA_PHONE_VALIDATION_QUEUE)).toBe(queueMock.queues[1])
+      expect(moduleRef.get(WA_SINGLE_SEND_QUEUE)).toBe(queueMock.queues[2])
+      expect(moduleRef.get(WA_LIFECYCLE_WORKER)).toBe(workerForQueue(WA_LIFECYCLE_QUEUE_NAME))
+      expect(moduleRef.get(WA_OWNER_LIFECYCLE_WORKER)).toBe(
+        workerForQueue(createWaLifecycleOwnerQueueName(moduleRef.get(WA_WORKER_ID))),
+      )
+      expect(moduleRef.get(WA_PHONE_VALIDATION_WORKER)).toBe(
+        workerForQueue(WA_PHONE_VALIDATION_QUEUE_NAME),
+      )
+      expect(moduleRef.get(WA_OWNER_PHONE_VALIDATION_WORKER)).toBe(
+        workerForQueue(createWaPhoneValidationOwnerQueueName(moduleRef.get(WA_WORKER_ID))),
+      )
+      expect(moduleRef.get(WA_SINGLE_SEND_WORKER)).toBe(workerForQueue(WA_SINGLE_SEND_QUEUE_NAME))
+      expect(moduleRef.get(WA_OWNER_SINGLE_SEND_WORKER)).toBe(
+        workerForQueue(createWaSingleSendOwnerQueueName(moduleRef.get(WA_WORKER_ID))),
+      )
       expect(moduleRef.get(WA_LIFECYCLE_QUEUE_FACTORY)).toBeTypeOf('function')
       expect(moduleRef.get(WA_LIFECYCLE_QUEUE_EVENTS_FACTORY)).toBeTypeOf('function')
+      expect(moduleRef.get(WA_PHONE_VALIDATION_QUEUE_FACTORY)).toBeTypeOf('function')
+      expect(moduleRef.get(WA_PHONE_VALIDATION_QUEUE_EVENTS_FACTORY)).toBeTypeOf('function')
+      expect(moduleRef.get(WA_SINGLE_SEND_QUEUE_FACTORY)).toBeTypeOf('function')
+      expect(moduleRef.get(WA_SINGLE_SEND_QUEUE_EVENTS_FACTORY)).toBeTypeOf('function')
       expect(moduleRef.get(WA_OWNER_TTL_MS)).toBe(30_000)
     } finally {
       await moduleRef.close()
@@ -171,16 +255,26 @@ describe('WaModule', () => {
     process.env.NODE_ENV = 'production'
     process.env.WA_WORKER_ID = 'worker-startup-recovery-test'
     const reconcile = vi.fn(async () => undefined)
+    const reconcileTerminalFailures = vi.fn(async () => undefined)
+    const startTerminalFailureReconciliation = vi.fn()
     const moduleRef = await Test.createTestingModule({ imports: [WaModule] })
       .overrideProvider(WA_REDIS_CONNECTION)
       .useValue(createFakeRedisConnection())
       .overrideProvider(WaRestrictedRecoveryReconciler)
       .useValue({ reconcile })
+      .overrideProvider(WaTerminalFailureReconciler)
+      .useValue({
+        reconcile: reconcileTerminalFailures,
+        start: startTerminalFailureReconciliation,
+        stop: vi.fn(),
+      })
       .compile()
 
     try {
       expect(reconcile).toHaveBeenCalledOnce()
-      expect(queueMock.workers).toHaveLength(2)
+      expect(reconcileTerminalFailures).toHaveBeenCalledOnce()
+      expect(startTerminalFailureReconciliation).toHaveBeenCalledOnce()
+      expect(queueMock.workers).toHaveLength(6)
       for (const worker of queueMock.workers) {
         expect(reconcile.mock.invocationCallOrder[0]).toBeLessThan(
           worker.run.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
@@ -246,7 +340,7 @@ describe('WaModule', () => {
     const moduleRef = await compilation
     try {
       expect(moduleRef.get(WA_WORKER_IDENTITY_LEASE)).toBeInstanceOf(WaWorkerIdentityLease)
-      expect(queueMock.createWorker).toHaveBeenCalledTimes(2)
+      expect(queueMock.createWorker).toHaveBeenCalledTimes(6)
     } finally {
       await moduleRef.close()
     }
@@ -271,7 +365,7 @@ describe('WaModule', () => {
     renew.resolve(1)
     const moduleRef = await compilation
     try {
-      expect(queueMock.createWorker).toHaveBeenCalledTimes(2)
+      expect(queueMock.createWorker).toHaveBeenCalledTimes(6)
     } finally {
       await moduleRef.close()
     }
@@ -322,11 +416,14 @@ describe('WaModule', () => {
         fakeRedisConnection,
         { autorun: false },
       )
-      expect(queueMock.createWorker).toHaveBeenCalledTimes(2)
+      expect(queueMock.createWorker).toHaveBeenCalledTimes(6)
       expect(workers[0]?.run).toHaveBeenCalledOnce()
       expect(workers[1]?.run).toHaveBeenCalledOnce()
 
-      const workerProcessor = queueMock.createWorker.mock.calls.at(-1)?.[1] as
+      const lifecycleCall = queueMock.createWorker.mock.calls.find(
+        ([queueName]) => queueName === WA_LIFECYCLE_QUEUE_NAME,
+      )
+      const workerProcessor = lifecycleCall?.[1] as
         ((job: { name: string; data: unknown }) => Promise<unknown>) | undefined
       const jobProcessor = moduleRef.get(WaLifecycleJobProcessor)
       const processSpy = vi
@@ -359,7 +456,7 @@ describe('WaModule', () => {
       await moduleRef.close()
     }
 
-    expect(workers).toHaveLength(2)
+    expect(workers).toHaveLength(6)
     for (const worker of workers) expect(worker.close).toHaveBeenCalledTimes(1)
   })
 
@@ -402,13 +499,21 @@ describe('WaModule', () => {
         WA_LIFECYCLE_QUEUE_NAME,
         fakeRedisConnection,
       )
-      expect(queueMock.createQueue).toHaveBeenCalledTimes(1)
-      expect(queueMock.createWorker).toHaveBeenCalledTimes(2)
+      expect(queueMock.createQueue).toHaveBeenCalledWith(
+        WA_PHONE_VALIDATION_QUEUE_NAME,
+        fakeRedisConnection,
+      )
+      expect(queueMock.createQueue).toHaveBeenCalledWith(
+        WA_SINGLE_SEND_QUEUE_NAME,
+        fakeRedisConnection,
+      )
+      expect(queueMock.createQueue).toHaveBeenCalledTimes(3)
+      expect(queueMock.createWorker).toHaveBeenCalledTimes(6)
 
       const service = moduleRef.get(WaLifecycleQueueService)
       await service.enqueueStart(' instance-1 ')
 
-      expect(queueMock.queues.at(-1)?.add).toHaveBeenCalledWith(
+      expect(queueMock.queues[0]?.add).toHaveBeenCalledWith(
         START_WA_INSTANCE_JOB_NAME,
         { instanceId: 'instance-1' },
         expect.objectContaining({ jobId: 'wa-lifecycle.start-wa-instance.instance-1' }),
@@ -423,11 +528,13 @@ describe('WaModule', () => {
       .overrideProvider(WA_REDIS_CONNECTION)
       .useValue(createFakeRedisConnection())
       .compile()
-    const queue = queueMock.queues.at(-1)
+    const lifecycleQueue = queueMock.queues[0]
+    const phoneValidationQueue = queueMock.queues[1]
 
     await moduleRef.close()
 
-    expect(queue?.close).toHaveBeenCalledTimes(1)
+    expect(lifecycleQueue?.close).toHaveBeenCalledTimes(1)
+    expect(phoneValidationQueue?.close).toHaveBeenCalledTimes(1)
   })
 
   it('disconnects the shared Prisma client on application shutdown', async () => {
@@ -456,7 +563,7 @@ describe('WaModule', () => {
       .useValue(redis)
       .compile()
     const workers = [...queueMock.workers]
-    const queue = queueMock.queues.at(-1)
+    const queue = queueMock.queues[0]
     const lifecycle = moduleRef.get<WaSessionLifecycleService>(WA_SESSION_LIFECYCLE)
     const identityLease = moduleRef.get<WaWorkerIdentityLease>(WA_WORKER_IDENTITY_LEASE)
     workers[0]?.pause.mockImplementation(async () => {
@@ -517,14 +624,14 @@ describe('WaModule', () => {
       .useValue(redis)
       .compile()
     const workers = [...queueMock.workers]
-    const queue = queueMock.queues.at(-1)
+    const queue = queueMock.queues[0]
     const lifecycle = moduleRef.get<WaSessionLifecycleService>(WA_SESSION_LIFECYCLE)
-    for (const [index, worker] of workers.entries()) {
+    for (const worker of workers) {
       worker.pause.mockImplementation(async (doNotWaitActive?: boolean) => {
-        events.push(`pause-${index}-${String(doNotWaitActive)}`)
+        events.push(`pause-${worker.name}-${String(doNotWaitActive)}`)
       })
       worker.close.mockImplementation(async (force?: boolean) => {
-        events.push(`close-${index}-${String(force)}`)
+        events.push(`close-${worker.name}-${String(force)}`)
         if (force !== true) await blockingClose
       })
     }
@@ -545,12 +652,25 @@ describe('WaModule', () => {
     try {
       expect(firstStep).toBe('sessions')
       await expect(shutdown).resolves.toBeUndefined()
+      const ownerLifecycleQueue = createWaLifecycleOwnerQueueName(moduleRef.get(WA_WORKER_ID))
+      const ownerValidationQueue = createWaPhoneValidationOwnerQueueName(
+        moduleRef.get(WA_WORKER_ID),
+      )
+      const ownerSingleSendQueue = createWaSingleSendOwnerQueueName(moduleRef.get(WA_WORKER_ID))
       expect(events).toEqual([
-        'pause-0-true',
-        'pause-1-true',
+        `pause-${WA_LIFECYCLE_QUEUE_NAME}-true`,
+        `pause-${ownerLifecycleQueue}-true`,
+        `pause-${WA_PHONE_VALIDATION_QUEUE_NAME}-true`,
+        `pause-${ownerValidationQueue}-true`,
+        `pause-${WA_SINGLE_SEND_QUEUE_NAME}-true`,
+        `pause-${ownerSingleSendQueue}-true`,
         'sessions',
-        'close-0-true',
-        'close-1-true',
+        `close-${WA_LIFECYCLE_QUEUE_NAME}-true`,
+        `close-${ownerLifecycleQueue}-true`,
+        `close-${WA_PHONE_VALIDATION_QUEUE_NAME}-true`,
+        `close-${ownerValidationQueue}-true`,
+        `close-${WA_SINGLE_SEND_QUEUE_NAME}-true`,
+        `close-${ownerSingleSendQueue}-true`,
         'queue',
         'redis',
         'prisma',
@@ -612,7 +732,7 @@ describe('WaModule', () => {
       .useValue(redis)
       .compile()
     const workers = [...queueMock.workers]
-    const queue = queueMock.queues.at(-1)
+    const queue = queueMock.queues[0]
     const lifecycle = moduleRef.get<WaSessionLifecycleService>(WA_SESSION_LIFECYCLE)
     workers[0]?.pause.mockImplementation(async () => {
       events.push('pause-shared-worker')
@@ -667,7 +787,7 @@ describe('WaModule', () => {
       .compile()
     const lifecycle = moduleRef.get<WaSessionLifecycleService>(WA_SESSION_LIFECYCLE)
     const identityLease = moduleRef.get<WaWorkerIdentityLease>(WA_WORKER_IDENTITY_LEASE)
-    const queue = queueMock.queues.at(-1)
+    const queue = queueMock.queues[0]
     const sessionError = new Error('physical session shutdown failed')
     vi.spyOn(lifecycle, 'shutdownAll').mockRejectedValue(sessionError)
     const release = vi.spyOn(identityLease, 'release')
@@ -691,7 +811,18 @@ describe('WaModule', () => {
     expect(prismaDisconnectSpy).toHaveBeenCalledOnce()
   })
 
-  it('wires the real session manager without direct Baileys imports or socket autostart', async () => {
+  it('uses a strict mock-by-default runtime gate', () => {
+    expect(resolveWaSessionRuntimeMode(undefined)).toBe('mock')
+    expect(resolveWaSessionRuntimeMode('')).toBe('mock')
+    expect(resolveWaSessionRuntimeMode('mock')).toBe('mock')
+    expect(resolveWaSessionRuntimeMode('baileys')).toBe('baileys')
+    expect(() => resolveWaSessionRuntimeMode('true')).toThrow(
+      'WA_SESSION_RUNTIME must be either mock or baileys',
+    )
+  })
+
+  it('wires the real session manager only with explicit opt-in and without socket autostart', async () => {
+    process.env.WA_SESSION_RUNTIME = 'baileys'
     const workerPackageJson = JSON.parse(
       await readFile(path.join(process.cwd(), 'package.json'), 'utf8'),
     ) as PackageJson
@@ -777,6 +908,12 @@ function restoreEnv(): void {
   } else {
     process.env.WA_OWNER_TTL_MS = originalWaOwnerTtlMs
   }
+
+  if (originalWaSessionRuntime === undefined) {
+    delete process.env.WA_SESSION_RUNTIME
+  } else {
+    process.env.WA_SESSION_RUNTIME = originalWaSessionRuntime
+  }
 }
 
 function createFakeRedisConnection(): unknown {
@@ -801,6 +938,10 @@ function createDeferred<T>() {
     resolve = resolver
   })
   return { promise, resolve }
+}
+
+function workerForQueue(queueName: string) {
+  return queueMock.workers.find((worker) => worker.name === queueName)
 }
 
 function delay(timeoutMs: number): Promise<void> {

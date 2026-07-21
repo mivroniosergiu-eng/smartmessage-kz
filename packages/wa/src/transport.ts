@@ -8,6 +8,7 @@ export type WaTransportErrorCode =
   | 'already_connected'
   | 'not_connected'
   | 'operation_in_progress'
+  | 'operation_drain_timeout'
   | 'close_timeout'
   | 'connect_failed'
   | 'disconnected'
@@ -118,5 +119,17 @@ export class WaTransportCloseTimeoutError extends Error {
   ) {
     super(`WA transport did not close within ${timeoutMs}ms for instance ${instanceId}`)
     this.name = 'WaTransportCloseTimeoutError'
+  }
+}
+
+export class WaTransportOperationDrainTimeoutError extends Error {
+  readonly code = 'operation_drain_timeout' satisfies WaTransportErrorCode
+
+  constructor(
+    readonly instanceId: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`WA transport operations did not drain within ${timeoutMs}ms for instance ${instanceId}`)
+    this.name = 'WaTransportOperationDrainTimeoutError'
   }
 }

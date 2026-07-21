@@ -83,6 +83,7 @@ FAILED FAILED
 
         MessageLogStatus {
             QUEUED QUEUED
+DISPATCHING DISPATCHING
 SENT SENT
 DELIVERED DELIVERED
 READ READ
@@ -137,6 +138,7 @@ SEND_ERROR SEND_ERROR
     String phone
     String name "❓"
     ContactWaStatus isValid "❓"
+    String waValidationRunId "❓"
     DateTime createdAt
     DateTime updatedAt
     }
@@ -219,6 +221,9 @@ SEND_ERROR SEND_ERROR
     String phone
     String type
     String message
+    String idempotencyKey
+    String providerMessageId "❓"
+    DateTime dispatchAttemptedAt "❓"
     MessageLogStatus status
     MessageErrorType errorType "❓"
     DateTime timePost

@@ -174,6 +174,31 @@ describe('BaileysSessionManager', () => {
     },
   )
 
+  it('refreshes persisted auth-state before reporting the post-pairing restart', async () => {
+    const transport = createFakeTransport()
+    const store = new InMemoryWaAuthStateStore()
+    const events: WaSessionEvents = { onDisconnected: vi.fn() }
+    const manager = new BaileysSessionManager(transport, store, events)
+    await manager.connect('instance-post-pairing-restart')
+    await store.write('instance-post-pairing-restart', {
+      creds: { registered: true },
+      keys: {},
+    })
+
+    await transport.emitDisconnected('instance-post-pairing-restart', 'restart_required')
+
+    await expect(manager.getState('instance-post-pairing-restart')).resolves.toMatchObject({
+      status: 'disconnected',
+      hasAuthState: true,
+      lastDisconnectReason: 'restart_required',
+    })
+    expect(events.onDisconnected).toHaveBeenCalledWith({
+      instanceId: 'instance-post-pairing-restart',
+      reason: 'restart_required',
+      state: expect.objectContaining({ status: 'disconnected', hasAuthState: true }),
+    })
+  })
+
   it.each([
     ['restricted', 'restricted'],
     ['banned', 'banned'],

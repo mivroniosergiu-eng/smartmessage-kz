@@ -74,6 +74,16 @@ export default async function DashboardPage() {
             <strong>Макс. WhatsApp аккаунтов:</strong> {team.permissions?.maxWhatsappAccounts ?? 1}
           </p>
         </section>
+
+        <section className="dashboard-card" aria-labelledby="whatsapp-card-title">
+          <h3 id="whatsapp-card-title">WhatsApp</h3>
+          <p style={{ marginBottom: '1rem' }}>
+            Подключение аккаунтов, проверка номеров и безопасная одиночная отправка.
+          </p>
+          <a className="btn-primary" href="/dashboard/whatsapp" style={{ display: 'inline-block', width: 'auto' }}>
+            Открыть WhatsApp
+          </a>
+        </section>
       </main>
     </div>
   )

@@ -17,6 +17,13 @@ describe('middleware session guard', () => {
     expect(response.headers.get('location')).toBe('http://localhost/login')
   })
 
+  it('protects nested WhatsApp dashboard routes without a session', async () => {
+    const response = await middleware(request('/dashboard/whatsapp'))
+
+    expect(response.status).toBe(307)
+    expect(response.headers.get('location')).toBe('http://localhost/login')
+  })
+
   it('does not redirect auth pages for malformed session cookies', async () => {
     const response = await middleware(request('/login', 'not-a-valid-session'))
 

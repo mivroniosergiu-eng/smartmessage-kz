@@ -24,6 +24,7 @@ import {
   PrismaWaAccountAdminService,
   WaAccountAdminDuplicateInstanceError,
   WaAccountAdminInvalidInputError,
+  WaAccountAdminLimitExceededError,
   WaAccountAdminTeamNotFoundError,
 } from './prisma-wa-account-admin.service'
 import {
@@ -58,7 +59,9 @@ interface WaLifecycleCommandDto {
 @Controller('internal/wa/accounts')
 export class WaAccountController {
   constructor(
+    @Inject(PrismaWaAccountAdminService)
     private readonly adminService: PrismaWaAccountAdminService,
+    @Inject(WaLifecycleCommandQueueService)
     private readonly commandQueue: WaLifecycleCommandQueueService,
     @Inject(WA_QR_BOOTSTRAP_REPOSITORY)
     private readonly qrBootstrapRepository: WaQrBootstrapRepository,
@@ -205,6 +208,9 @@ function mapWaHttpError(error: unknown): HttpException {
   }
   if (error instanceof WaAccountAdminTeamNotFoundError) {
     return new NotFoundException(error.message)
+  }
+  if (error instanceof WaAccountAdminLimitExceededError) {
+    return new ConflictException(error.message)
   }
   if (error instanceof WaAccountCommandTargetNotFoundError) {
     return new NotFoundException(error.message)

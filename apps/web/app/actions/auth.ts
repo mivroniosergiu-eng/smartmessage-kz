@@ -7,19 +7,19 @@ import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { hashPassword, verifyPassword, encryptSession } from '../lib/auth'
 
-const INVALID_EMAIL_MESSAGE = 'РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ С„РѕСЂРјР°С‚ email'
-const DUPLICATE_EMAIL_ERROR = 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ СЃ С‚Р°РєРёРј email СѓР¶Рµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅ'
-const INVALID_CREDENTIALS_ERROR = 'РќРµРІРµСЂРЅС‹Р№ email РёР»Рё РїР°СЂРѕР»СЊ'
+const INVALID_EMAIL_MESSAGE = 'Некорректный формат email'
+const DUPLICATE_EMAIL_ERROR = 'Пользователь с таким email уже зарегистрирован'
+const INVALID_CREDENTIALS_ERROR = 'Неверный email или пароль'
 
 const RegisterSchema = z.object({
   email: z.string().email({ message: INVALID_EMAIL_MESSAGE }),
-  password: z.string().min(6, { message: 'РџР°СЂРѕР»СЊ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РЅРµ РјРµРЅРµРµ 6 СЃРёРјРІРѕР»РѕРІ' }),
-  teamName: z.string().min(1, { message: 'РРјСЏ РєРѕРјР°РЅРґС‹ РЅРµ РјРѕР¶РµС‚ Р±С‹С‚СЊ РїСѓСЃС‚С‹Рј' }),
+  password: z.string().min(6, { message: 'Пароль должен содержать не менее 6 символов' }),
+  teamName: z.string().min(1, { message: 'Название команды не может быть пустым' }),
 })
 
 const LoginSchema = z.object({
   email: z.string().email({ message: INVALID_EMAIL_MESSAGE }),
-  password: z.string().min(1, { message: 'РџР°СЂРѕР»СЊ РЅРµ РјРѕР¶РµС‚ Р±С‹С‚СЊ РїСѓСЃС‚С‹Рј' }),
+  password: z.string().min(1, { message: 'Пароль не может быть пустым' }),
 })
 
 export type FormState = {
@@ -122,7 +122,7 @@ export async function registerAction(_prevState: FormState, formData: FormData):
     }
 
     console.error('Registration error:', error)
-    return { error: 'РџСЂРѕРёР·РѕС€Р»Р° РІРЅСѓС‚СЂРµРЅРЅСЏСЏ РѕС€РёР±РєР° РїСЂРё СЂРµРіРёСЃС‚СЂР°С†РёРё' }
+    return { error: 'Произошла внутренняя ошибка при регистрации' }
   }
 
   redirect('/dashboard')
@@ -162,7 +162,7 @@ export async function loginAction(_prevState: FormState, formData: FormData): Pr
     })
   } catch (error) {
     console.error('Login error:', error)
-    return { error: 'РџСЂРѕРёР·РѕС€Р»Р° РІРЅСѓС‚СЂРµРЅРЅСЏСЏ РѕС€РёР±РєР° РїСЂРё Р°РІС‚РѕСЂРёР·Р°С†РёРё' }
+    return { error: 'Произошла внутренняя ошибка при авторизации' }
   }
 
   redirect('/dashboard')
