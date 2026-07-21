@@ -43,7 +43,8 @@ async function isValidSessionToken(token: string): Promise<boolean> {
     if (parts.length !== 2) return false
 
     const [dataBase64, hmac] = parts
-    const data = atob(dataBase64)
+    const dataBytes = Uint8Array.from(atob(dataBase64), (character) => character.charCodeAt(0))
+    const data = new TextDecoder('utf-8', { fatal: true }).decode(dataBytes)
     const checkHmac = await signSessionData(data)
     if (!constantTimeHexEqual(checkHmac, hmac)) return false
     return parseActiveSession(JSON.parse(data)) !== null

@@ -1,7 +1,7 @@
 # QA-run: повторный аудит закрытия Фазы 1 — 2026-07-22
 
 - Исполнитель: Codex
-- Рабочая ветка: `feat/phase-1-wa-phone-validation`
+- Рабочая ветка: `fix/phase-1-closure-audit-main`
 - База аудита: PR head `0dd198e`, merged `main` `8dc288c` (одинаковое дерево до closure-diff)
 - Среда: отдельная PostgreSQL БД и отдельный Redis logical DB; реальные customer/WA данные не использовались
 
@@ -20,21 +20,22 @@
 - Runtime gate: red — `BAILEYS` и значение с пробелами включали real transport; green — принимается только точное `baileys`.
 - Full coverage выявил 2 флапающих Redis lease tests при file-level contention; worker integration files изолированы последовательным запуском без удаления или ослабления assertions.
 - Next.js 15 build выявил старые sync `cookies()` и sync `searchParams`; оба пути переведены на async API.
+- Review PR #31 выявил несовпадение UTF-8-декодирования session payload в Edge middleware, неоднозначные массивы query-параметров и неполную валидацию Playwright URL; добавлены регрессионные тесты и единые строгие преобразования.
 
 ## Автотесты и статические gate'ы
 
-- `pnpm test:cov` — passed, 623/623:
+- `pnpm test:cov` — passed, 631/631:
   - db 5/5;
   - queue 26/26;
   - shared 42/42;
   - WA 252/252;
-  - web 43/43;
+  - web 51/51;
   - worker 255/255.
 - Фактическое покрытие ключевых поверхностей:
   - queue: statements/lines 96.40 %, branches 92.53 %, functions 93.93 %;
   - WA: statements/lines 91.75 %, branches 83.93 %, functions 97.11 %;
   - worker: statements/lines 92.98 %, branches 86.71 %, functions 93.95 %;
-  - web: statements/lines 53.49 %, branches 71.52 %, functions 81.25 %.
+  - web: statements/lines 55.48 %, branches 74.50 %, functions 82.00 %.
 - `pnpm typecheck` — passed.
 - `pnpm lint` — passed, 0 warnings/errors.
 - `pnpm build` — passed с Next.js 15.5.21 и NestJS 11.1.28.
@@ -56,4 +57,4 @@
 
 ## Итог
 
-Технический closure-gate Фазы 1 пройден. Для официального попадания closure-diff в `main` нужны обычные commit/PR/CI действия владельца; они не выполнялись в рамках локального аудита.
+Технический closure-gate Фазы 1 пройден. Closure-diff опубликован в PR #31; до попадания в `main` требуется успешная финальная проверка и merge PR владельцем.

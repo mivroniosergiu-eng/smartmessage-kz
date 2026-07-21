@@ -67,7 +67,7 @@ packages/*/
 ### 4.2. Интеграционные (средний слой)
 
 - **БД-интеграция**: реальная test-PostgreSQL. Миграции применяются, запросы возвращают ожидаемое, транзакции откатываются, unique-constraint'ы (идемпотентность) работают.
-- **Очереди**: test-Redis. Задание ставится → воркер подбирает → side-effect вызывается с ожидаемыми аргументами → при выбросе ошибки retry с backoff → идемпотентность (повторный enqueue того же unique-id не дублирует). WA phone validation закреплён реальным Redis/BullMQ smoke-тестом в `apps/worker/src/wa/wa-phone-validation.integration.spec.ts`: duplicate enqueue даёт один вызов, финальный failure переводит run в `ERROR`, а новый enqueue создаёт новый run. Одиночная отправка закреплена `apps/worker/src/wa/wa-single-send.integration.spec.ts`: duplicate enqueue использует один mock sender side effect и один durable `MessageLog`.
+- **Очереди**: test-Redis. Задание ставится, затем воркер подбирает его, side-effect вызывается с ожидаемыми аргументами, временный сбой запускает retry с backoff, а повторный enqueue того же unique-id подтверждает идемпотентность без дубля. WA phone validation закреплён реальным Redis/BullMQ smoke-тестом в `apps/worker/src/wa/wa-phone-validation.integration.spec.ts`: duplicate enqueue вызывает обработчик один раз, окончательный failure переводит run в `ERROR`, а новый enqueue создаёт новый run. Одиночная отправка закреплена `apps/worker/src/wa/wa-single-send.integration.spec.ts`: duplicate enqueue использует один mock sender side effect и один durable `MessageLog`.
 - **API routes / Server Actions**: с test-БД и mock-внешними сервисами. Проверка auth/прав, zod-валидации ввода, формы ответа, ошибок.
 - **Webhook handlers**: входящий WA-сообщение → Lead/MessageLog создан; Meta ad-lead webhook → Lead создан; webhook платёжного провайдера → Subscription обновлён (с проверкой подписи).
 - **Воркер end-to-end в test-режиме**: Campaign active → BullMQ → Sender (mock Baileys) → MessageLog записан → Stats обновлены.
@@ -104,7 +104,7 @@ packages/*/
 ### 5.3. Воронка и чат-бот (Этап 2)
 
 - `lead-pipeline.spec.ts`: лид движется по этапам воронки менеджером.
-- `chatbot-handoff.spec.ts`: симуляция входящего сообщения → чат-бот отвечает → создаёт CalendarItem → менеджер видит.
+- `chatbot-handoff.spec.ts`: симуляция входящего сообщения → чат-бот отвечает и создаёт CalendarItem → менеджер видит результат.
 
 ### 5.4. Массовая рассылка (Этап 3) — критично
 

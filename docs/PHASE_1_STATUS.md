@@ -15,7 +15,7 @@
 - coverage thresholds стали исполняемыми gate'ами для web, worker, queue и WA; worker integration files выполняются последовательно, чтобы общий прогон не флапал из-за конкуренции за общие test-БД/test-Redis;
 - Playwright запускает dev server на порту из `PLAYWRIGHT_BASE_URL`, что подтверждено прогоном на порту `3191`.
 
-Локальный closure-gate: 623/623 workspace tests с coverage, Playwright 2/2, typecheck, lint, build и 11/11 Prisma migrations — passed. Новый реальный WA side effect в ходе повторного аудита не выполнялся: owner-authorized QR/restart/validation/single-send evidence PR #29 сохранён без подмены автоматическими проверками. Подробности — `docs/qa-runs/2026-07-22-phase-1-closure-audit.md`.
+Локальный closure-gate: 631/631 workspace tests с coverage, Playwright 2/2, typecheck, lint, build и 11/11 Prisma migrations — passed. Новый реальный WA side effect в ходе повторного аудита не выполнялся: owner-authorized QR/restart/validation/single-send evidence PR #29 сохранён без подмены автоматическими проверками. Подробности — `docs/qa-runs/2026-07-22-phase-1-closure-audit.md`.
 
 ## Закрыто в `main`
 
