@@ -2,7 +2,7 @@
 
 Дата актуальности: 2026-07-22.
 
-Функциональный скоуп Фазы 1 реализован и прошёл локальные автотесты и owner-authorized real-WA QA в текущем worktree. Формально Фаза 1 остаётся открытой до обязательных review → commit → PR → серверный CI → merge gates; утверждать полный Done до CI нельзя. Массовые кампании, campaign scheduling, jitter/rate-limit и campaign circuit-breaker остаются вне её scope.
+**Статус: закрыта через PR #29.** Функциональный скоуп Фазы 1 реализован, прошёл независимые review, локальные автотесты, owner-authorized real-WA QA и серверный `quality-gate`. Наличие этой версии файла в `main` означает, что финальный merge-gate также завершён. Массовые кампании, campaign scheduling, jitter/rate-limit и campaign circuit-breaker остаются вне её scope.
 
 ## Закрыто в `main`
 
@@ -47,9 +47,11 @@
 - production-подобный real-WA QA обнаружил и закрыл отсутствующие explicit Nest injection metadata у operations controller и validation account selector; runtime regression-test теперь защищает эти constructor boundaries.
 - transitive `libsignal` больше не выводит Signal session objects и cryptographic material в runtime console: воспроизводимый pnpm patch сохраняет только безопасные сообщения, regression-test проверяет установленную зависимость.
 
-## Остаток до появления в `main`
+## Gate закрытия
 
-- отдельный review текущего большого Phase 1 diff;
-- ветка → PR → зелёный серверный CI → merge после разрешения review threads. Campaign gating остаётся Фазой 3.
+- два независимых subagent-review завершены; найденные P1/P2 исправлены TDD-first;
+- локальные tests/coverage/typecheck/lint/build/Playwright и Prisma migration gate прошли;
+- PR #29 получил зелёный серверный `quality-gate`, CodeRabbit check завершён, unresolved review threads отсутствуют;
+- merge PR #29 в `main` атомарно закрывает Фазу 1. Campaign gating остаётся Фазой 3.
 
 Owner-authorized real Baileys QR/restart, phone validation, single-send и web status подтверждены на настоящем WA-аккаунте. Сообщение пришло ровно один раз; `MessageLog` содержит одну terminal `SENT`-запись. Полный workspace test/typecheck/lint/build, coverage и Playwright прошли на изолированных test-БД/test-Redis.

@@ -3,8 +3,8 @@
 Последнее обновление фактического real-WA прогона: 2026-07-22.
 
 - Исполнитель: Codex task-agent; review выполнен subagent-аудитами и targeted tests
-- Ветка: `feat/phase-1-wa-phone-validation` (commit будет зафиксирован перед PR)
-- PR/CI: pending
+- Ветка: `feat/phase-1-wa-phone-validation`
+- PR/CI: PR #29; серверный `quality-gate` passed, CodeRabbit check completed, unresolved review threads: 0
 
 ## Автотесты
 

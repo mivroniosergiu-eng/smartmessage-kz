@@ -9,7 +9,7 @@
 - TDD green: `pnpm --filter @smartmessage/worker exec vitest run src/wa/prisma-wa-auth-state.repository.spec.ts` на изолированной `smartmessage_test` — passed, 14/14.
 - `pnpm --filter @smartmessage/worker typecheck` — passed.
 - `pnpm --filter @smartmessage/worker lint` — passed.
-- Полный локальный gate: workspace tests 620/620, typecheck, lint, coverage, build и Playwright 2/2 — passed; серверный CI pending до PR.
+- Полный локальный gate: workspace tests 620/620, typecheck, lint, coverage, build и Playwright 2/2 — passed; PR #29 server `quality-gate` — passed.
 
 ## Проверенные контракты
 
