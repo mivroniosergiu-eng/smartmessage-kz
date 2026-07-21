@@ -1,10 +1,12 @@
 import { defineConfig, devices } from '@playwright/test'
+import { resolvePlaywrightWebServerPort } from './app/lib/playwright-base-url'
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://127.0.0.1:3100'
+const webServerPort = resolvePlaywrightWebServerPort(baseURL)
 const databaseUrl =
-  process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5433/smartmessage?schema=public'
-const sessionSecret =
-  process.env.SESSION_SECRET ?? 'test-session-secret-at-least-32-chars-long'
+  process.env.DATABASE_URL ??
+  'postgresql://postgres:postgres@localhost:5433/smartmessage?schema=public'
+const sessionSecret = process.env.SESSION_SECRET ?? 'test-session-secret-at-least-32-chars-long'
 
 process.env.DATABASE_URL = databaseUrl
 process.env.SESSION_SECRET = sessionSecret
@@ -26,7 +28,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'pnpm exec next dev -p 3100',
+    command: `pnpm exec next dev -p ${webServerPort}`,
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

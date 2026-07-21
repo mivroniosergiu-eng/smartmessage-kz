@@ -83,6 +83,7 @@ import { WaSingleSendJobProcessor } from './wa-single-send-job.processor'
 import { WaSingleSendQueueService } from './wa-single-send-queue.service'
 import { WaTerminalFailureReconciler } from './wa-terminal-failure-reconciler'
 import { WaOperationsController } from './wa-operations.controller'
+import { WaIncomingEventReceiver } from './wa-incoming-event.receiver'
 import { WaWorkerIdentityConflictError, WaWorkerIdentityLease } from './wa-worker-identity-lease'
 import { WaWorkerIdentityLossGate } from './wa-worker-identity-supervisor'
 
@@ -165,6 +166,7 @@ describe('WaModule', () => {
         PrismaWaQrBootstrapRepository,
       )
       expect(moduleRef.get(WA_AUTH_STATE_STORE)).toBeInstanceOf(PrismaWaAuthStateRepository)
+      expect(moduleRef.get(WaIncomingEventReceiver)).toBeInstanceOf(WaIncomingEventReceiver)
       expect(moduleRef.get(WA_SESSION_RUNTIME)).toBeDefined()
       expect(moduleRef.get(WA_SESSION_MANAGER)).toBeInstanceOf(MockSessionManager)
       expect(moduleRef.get(WA_SESSION_LIFECYCLE)).toBeInstanceOf(WaSessionLifecycleService)
@@ -816,6 +818,12 @@ describe('WaModule', () => {
     expect(resolveWaSessionRuntimeMode('')).toBe('mock')
     expect(resolveWaSessionRuntimeMode('mock')).toBe('mock')
     expect(resolveWaSessionRuntimeMode('baileys')).toBe('baileys')
+    expect(() => resolveWaSessionRuntimeMode('BAILEYS')).toThrow(
+      'WA_SESSION_RUNTIME must be either mock or baileys',
+    )
+    expect(() => resolveWaSessionRuntimeMode(' baileys ')).toThrow(
+      'WA_SESSION_RUNTIME must be either mock or baileys',
+    )
     expect(() => resolveWaSessionRuntimeMode('true')).toThrow(
       'WA_SESSION_RUNTIME must be either mock or baileys',
     )

@@ -38,6 +38,7 @@ import {
   type SessionManager,
   type WaAccountStatusRepository,
   type WaQrBootstrapRepository,
+  type WaReceiver,
 } from '@smartmessage/wa'
 
 import { InternalWorkerApiGuard } from './internal-worker-api.guard'
@@ -49,6 +50,7 @@ import { PrismaWaAccountAdminService } from './prisma-wa-account-admin.service'
 import { PrismaWaRestrictedRecoveryService } from './prisma-wa-restricted-recovery.service'
 import { WaAccountController } from './wa-account.controller'
 import { WaOperationsController } from './wa-operations.controller'
+import { WaIncomingEventReceiver } from './wa-incoming-event.receiver'
 import {
   WA_OWNER_REGISTRY,
   WA_OWNER_TTL_MS,
@@ -348,6 +350,7 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
       provide: WA_AUTH_STATE_STORE,
       useFactory: (): WaAuthStateStore => new PrismaWaAuthStateRepository(),
     },
+    WaIncomingEventReceiver,
     {
       provide: WA_SESSION_RUNTIME,
       useFactory: (
@@ -357,6 +360,7 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
         ttlMs: number,
         statusRepository: WaAccountStatusRepository,
         qrBootstrapRepository: WaQrBootstrapRepository,
+        receiver: WaReceiver,
         lifecycleQueue: WaLifecycleQueueService,
         _identityLease: WaWorkerIdentityLease,
         identityGate: WaWorkerIdentityLossGate,
@@ -371,6 +375,7 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
             ttlMs,
             statusRepository,
             qrBootstrapRepository,
+            receiver,
             restrictionRecoveryScheduler: {
               scheduleRestrictedRecovery: async (instanceId, restrictedUntil): Promise<void> => {
                 await lifecycleQueue.enqueueRestrictedRecovery(instanceId, restrictedUntil)
@@ -385,6 +390,7 @@ class WaShutdownCoordinator implements OnApplicationShutdown {
         WA_OWNER_TTL_MS,
         WA_STATUS_REPOSITORY,
         WA_QR_BOOTSTRAP_REPOSITORY,
+        WaIncomingEventReceiver,
         WaLifecycleQueueService,
         WA_WORKER_IDENTITY_LEASE,
         WaWorkerIdentityLossGate,
@@ -822,9 +828,8 @@ export function resolveWaOwnerTtlMs(value: string | undefined): number {
 export type WaSessionRuntimeMode = 'mock' | 'baileys'
 
 export function resolveWaSessionRuntimeMode(value: string | undefined): WaSessionRuntimeMode {
-  const normalized = value?.trim().toLowerCase()
-  if (!normalized || normalized === 'mock') return 'mock'
-  if (normalized === 'baileys') return 'baileys'
+  if (value === undefined || value === '' || value === 'mock') return 'mock'
+  if (value === 'baileys') return 'baileys'
   throw new Error('WA_SESSION_RUNTIME must be either mock or baileys')
 }
 

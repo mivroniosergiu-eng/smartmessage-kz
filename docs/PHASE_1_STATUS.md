@@ -4,6 +4,19 @@
 
 **Статус: закрыта через PR #29.** Функциональный скоуп Фазы 1 реализован, прошёл независимые review, локальные автотесты, owner-authorized real-WA QA и серверный `quality-gate`. Наличие этой версии файла в `main` означает, что финальный merge-gate также завершён. Массовые кампании, campaign scheduling, jitter/rate-limit и campaign circuit-breaker остаются вне её scope.
 
+## Повторный аудит закрытия — 2026-07-22
+
+После merge PR #29 выполнен отдельный аудит реализации и evidence. В closure-diff относительно `main` устранены найденные технические разрывы:
+
+- production worker теперь явно инжектирует consumer входящих `messages.upsert/update`; consumer пишет только санитизированные счётчики и не выводит JID, текст, message id или raw payload;
+- web-сессии имеют строгую схему claim'ов, HMAC сравнивается constant-time, срок действия cookie и token одинаков — 7 суток; устаревшие cookie без `iat/exp` намеренно инвалидируются и требуют один повторный вход;
+- `WA_SESSION_RUNTIME=baileys` остаётся точным opt-in без нормализации регистра или пробелов;
+- Next.js обновлён до `15.5.21`, NestJS — до `11.1.28`, уязвимые transitive `postcss`/`qs` закреплены безопасными версиями; `pnpm audit --prod` — 0 известных уязвимостей;
+- coverage thresholds стали исполняемыми gate'ами для web, worker, queue и WA; worker integration files выполняются последовательно, чтобы общий прогон не флапал из-за конкуренции за общие test-БД/test-Redis;
+- Playwright запускает dev server на порту из `PLAYWRIGHT_BASE_URL`, что подтверждено прогоном на порту `3191`.
+
+Локальный closure-gate: 631/631 workspace tests с coverage, Playwright 2/2, typecheck, lint, build и 11/11 Prisma migrations — passed. Новый реальный WA side effect в ходе повторного аудита не выполнялся: owner-authorized QR/restart/validation/single-send evidence PR #29 сохранён без подмены автоматическими проверками. Подробности — `docs/qa-runs/2026-07-22-phase-1-closure-audit.md`.
+
 ## Закрыто в `main`
 
 - owner registry и guarded lifecycle-команды;
@@ -32,6 +45,7 @@
 - `RESTRICTED` закрывает transport без logout и восстанавливается через точный delayed BullMQ job; DB-authoritative execution и startup reconciliation исключают ранний/stale reconnect;
 - `BANNED` монотонно блокирует producer, execution и ownership start-gates после рестарта; fenced переход создаёт один санитизированный `AuditLog`.
 - `messages.upsert/update` единственного активного socket-generation преобразуются в нормализованные типизированные domain batch-события; malformed records фильтруются, consumer failure не рвёт event stream, raw Baileys payload и автоответ отсутствуют.
+- production worker всегда передаёт runtime явный санитизированный incoming-event consumer; события больше не теряются из-за отсутствующей DI-привязки.
 - `validate-phone` — durable BullMQ queue с одним stable job-id на tenant/contact и retry/backoff. Контакт атомарно проходит `NULL/ERROR → IN_PROGRESS → CONFIRMED/NOT_ON_WHATSAPP`, а после последней неуспешной попытки — `ERROR`; окончательно failed job удаляется, поэтому явный новый enqueue после `ERROR` запускает новую проверку, а terminal status повторно не вызывает внешний transport;
 - generic validation job выбирает только `CONNECTED`-аккаунты своей команды через распределённый Redis round-robin cursor, сверяет live ownership и направляет `onWhatsApp` в exact owner queue с epoch-fence. Directed result дедуплицируется в пределах одного validation run, но новая проверка после `ERROR` получает новый run-id;
 - `onWhatsApp` использует только уже открытый owner socket, нормализует KZ-номер и ограничен 10-секундным timeout. Validation consumers входят в identity-loss fail-closed и graceful shutdown; сокет ради проверки не открывается.

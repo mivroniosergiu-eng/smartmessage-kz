@@ -19,18 +19,18 @@
 
 ## 2. Инструменты (фиксированные)
 
-| Слой | Инструмент | Применение |
-|------|------------|------------|
-| Unit/интеграция | **Vitest** | domainless pure-функции, сервисы, контракты |
-| БД-интеграция | **Vitest** + test-БД PostgreSQL + `prisma migrate reset` | schema, запросы, транзакции |
-| HTTP/API | **Vitest** + `supertest`-стиль | API routes, Server Actions, webhook handlers |
-| Очереди | **Vitest** + test-Redis + BullMQ в `test`-режиме | job'ы, retry, идемпотентность |
-| Внешние API | **MSW** (Mock Service Worker) / per-test stub | WA (Baileys mock), Meta/TikTok ad-API, OpenAI, платёжный провайдер (MoR) |
-| E2E | **Playwright** | сквозные пользовательские потоки в браузере |
-| Визуальная регрессия | Playwright screenshot diffs (опционально) | критичные страницы |
-| Контрактные | Vitest-снимки zod-схем + тип-контракты между пакетами | shared DTO |
-| Покрытие | Vitest coverage (c8/v8) | gate на критичные пакеты |
-| Статический анализ | TypeScript strict + ESLint + Prettier | gate на всех |
+| Слой                 | Инструмент                                               | Применение                                                               |
+| -------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Unit/интеграция      | **Vitest**                                               | domainless pure-функции, сервисы, контракты                              |
+| БД-интеграция        | **Vitest** + test-БД PostgreSQL + `prisma migrate reset` | schema, запросы, транзакции                                              |
+| HTTP/API             | **Vitest** + `supertest`-стиль                           | API routes, Server Actions, webhook handlers                             |
+| Очереди              | **Vitest** + test-Redis + BullMQ в `test`-режиме         | job'ы, retry, идемпотентность                                            |
+| Внешние API          | **MSW** (Mock Service Worker) / per-test stub            | WA (Baileys mock), Meta/TikTok ad-API, OpenAI, платёжный провайдер (MoR) |
+| E2E                  | **Playwright**                                           | сквозные пользовательские потоки в браузере                              |
+| Визуальная регрессия | Playwright screenshot diffs (опционально)                | критичные страницы                                                       |
+| Контрактные          | Vitest-снимки zod-схем + тип-контракты между пакетами    | shared DTO                                                               |
+| Покрытие             | Vitest coverage (c8/v8)                                  | gate на критичные пакеты                                                 |
+| Статический анализ   | TypeScript strict + ESLint + Prettier                    | gate на всех                                                             |
 
 ---
 
@@ -57,28 +57,33 @@ packages/*/
 ## 4. Пирамида
 
 ### 4.1. Unit (фундамент, много, быстро)
+
 - **Pure-функции** в `packages/shared`: нормализация номеров, JID, spintax, шаблонизатор `%key%`, классификация ошибок отправки (`media_error/session_error/send_error`), clock/timezone-утилиты.
 - **Доменные правила**: переходы состояний Campaign/Lead/Contact, валидация лимитов тарифа, маппинг delay/jitter, расчёт подписки.
-- **Сервисы** с замоканными репозиториями: ``CampaignService.start()``, `SubscriptionService.charge()`, etc.
+- **Сервисы** с замоканными репозиториями: `CampaignService.start()`, `SubscriptionService.charge()`, etc.
 - **LLM-обёртки** с замоканным LLM-клиентом: проверка zod-валидации ответа, retry при schema-error, cost-guard.
 - **Покрытие gate** (рекомендация): ≥ 90 % строк на `packages/shared`, `packages/queue`, `packages/wa` sender-логики.
 
 ### 4.2. Интеграционные (средний слой)
+
 - **БД-интеграция**: реальная test-PostgreSQL. Миграции применяются, запросы возвращают ожидаемое, транзакции откатываются, unique-constraint'ы (идемпотентность) работают.
-- **Очереди**: test-Redis. Задание ставится → воркер подбирает → side-effect вызывается с ожидаемыми аргументами → при выбросе ошибки retry с backoff → идемпотентность (повторный enqueue того же unique-id не дублирует). WA phone validation закреплён реальным Redis/BullMQ smoke-тестом в `apps/worker/src/wa/wa-phone-validation.integration.spec.ts`: duplicate enqueue даёт один вызов, финальный failure переводит run в `ERROR`, а новый enqueue создаёт новый run. Одиночная отправка закреплена `apps/worker/src/wa/wa-single-send.integration.spec.ts`: duplicate enqueue использует один mock sender side effect и один durable `MessageLog`.
+- **Очереди**: test-Redis. Задание ставится, затем воркер подбирает его, side-effect вызывается с ожидаемыми аргументами, временный сбой запускает retry с backoff, а повторный enqueue того же unique-id подтверждает идемпотентность без дубля. WA phone validation закреплён реальным Redis/BullMQ smoke-тестом в `apps/worker/src/wa/wa-phone-validation.integration.spec.ts`: duplicate enqueue вызывает обработчик один раз, окончательный failure переводит run в `ERROR`, а новый enqueue создаёт новый run. Одиночная отправка закреплена `apps/worker/src/wa/wa-single-send.integration.spec.ts`: duplicate enqueue использует один mock sender side effect и один durable `MessageLog`.
 - **API routes / Server Actions**: с test-БД и mock-внешними сервисами. Проверка auth/прав, zod-валидации ввода, формы ответа, ошибок.
 - **Webhook handlers**: входящий WA-сообщение → Lead/MessageLog создан; Meta ad-lead webhook → Lead создан; webhook платёжного провайдера → Subscription обновлён (с проверкой подписи).
 - **Воркер end-to-end в test-режиме**: Campaign active → BullMQ → Sender (mock Baileys) → MessageLog записан → Stats обновлены.
 
 ### 4.3. Контрактные
+
 - **DTO/схемы**: zod-схемы в `packages/shared` имеют snapshot-тесты. Изменение схемы = явное изменение снимка + проверка потребителя.
 - **Producer/consumer**: если web-клиент ожидает форму X от Server Action, есть контрактный тест, утверждающий, что Action возвращает X.
 - **Внешние API контракты**: фиксированные fixture'ы реальных ответов Meta/TikTok/OpenAI/платёжного провайдера → парсинг и обработка стабильны. Версионирование API зафиксировано.
 
 ### 4.4. E2E (Playwright, мало, только критичные потоки)
+
 Только основные пользовательские сценарии. Дорого — держать тонким.
 
 ### 4.5. Ручные чекпоинты
+
 В `QA_CHECKPOINTS.md` — обязательные чек-листы по этапам, которые человек прогоняет перед продвижением фазы.
 
 ---
@@ -88,17 +93,21 @@ packages/*/
 Эти потоки должны быть автоматизированы в Playwright и быть зелёными для релиза. Каждый — с тестовыми данными в seed.
 
 ### 5.1. Аутентификация и права
+
 - `auth-signup-signin.spec.ts`: регистрация → логин → защищённая страница доступна → разлогин → защищённая страница редиректит.
 - `permissions-tier-gate.spec.ts`: пользователь free пытается открыть фичу pro → блокируется/апсейл.
 
 ### 5.2. Лидогенерация (Этап 1)
+
 - `lead-capture.spec.ts`: вебхук ad-lead → лид появляется в CRM → закреплён за командой.
 
 ### 5.3. Воронка и чат-бот (Этап 2)
+
 - `lead-pipeline.spec.ts`: лид движется по этапам воронки менеджером.
-- `chatbot-handoff.spec.ts`: симуляция входящего сообщения → чат-бот отвечает → создаёт CalendarItem → менеджер видит.
+- `chatbot-handoff.spec.ts`: симуляция входящего сообщения → чат-бот отвечает и создаёт CalendarItem → менеджер видит результат.
 
 ### 5.4. Массовая рассылка (Этап 3) — критично
+
 - `broadcast-create-start.spec.ts`: создать кампанию → старт → кампания active → задания в очереди.
 - `broadcast-pause-resume.spec.ts`: пауза → задания останавливаются → резюме → продолжаются без дублей.
 - `broadcast-circuit-breaker.spec.ts`: при пороге technical_failed → кампания auto-paused → уведомление.
@@ -109,6 +118,7 @@ packages/*/
 - `broadcast-stats-not-messageLog.spec.ts`: прогресс/статистика в UI читаются из `Stats`; ни один пользовательский поток не делает `COUNT/GROUP BY` по `MessageLog`.
 
 ### 5.5. Подписка/биллинг (Этап 5) — критично
+
 - `subscription-checkout.spec.ts`: выбор тарифа → checkout провайдера (mock/test-mode) → webhook → подписка active → права расширены.
 - `subscription-checkout-metadata.spec.ts`: Checkout Session создаётся с `metadata: { teamId, subscriptionId }` + `client_reference_id`; без них — тест падает (контракт).
 - `subscription-webhook-team-mapping.spec.ts`: рекуррентный webhook (без `teamId` в payload) → поиск `Subscription` по `providerSubId` (`@unique`) → корректный `teamId` → обновление `Permissions`. Поведение при отсутствии маппинга — явная ошибка, не silent loss.
@@ -116,9 +126,11 @@ packages/*/
 - `subscription-cancel.spec.ts`: отмена → в конце периода права понижаются.
 
 ### 5.6. Обучение (Этап 4)
+
 - `course-access.spec.ts`: материал открывается по правам тарифа; материал вне тира заблокирован.
 
 ### 5.7. Cross-tenant изоляция (обязательный класс)
+
 - `tenant-isolation.spec.ts`: под токеном Команды А подмена `leadId`/`contactId`/`instanceId`/`subscriptionId`/`campaignId` Команды Б → 403/redirect, никаких данных не утекает. Покрывать **все** tenant-scoped эндпоинты и Server Actions. Обязательный класс для B2B-изоляции (см. `AGENTS.md` §7 мульти-тенантность).
 
 ---
@@ -128,6 +140,7 @@ packages/*/
 Перед закрытием нетривиальной задачи убедиться, что покрытие включает:
 
 ### Рассылки
+
 - [ ] Идемпотентность: повторный enqueue `(campaignId, contactId)` не дублирует отправку.
 - [ ] Retry с backoff на `session_error`/`timeout` повторяет **отправку сообщения**, не только реконнект.
 - [ ] Rate-limit: глобальный лимит аккаунта соблюдается при параллельных кампаниях.
@@ -144,6 +157,7 @@ packages/*/
 - [ ] **Агрегаты из `Stats`**: пользовательские потоки не делают `COUNT/GROUP BY` по `MessageLog`.
 
 ### Биллинг
+
 - [ ] Корректность суммы списания по тарифу.
 - [ ] Idempotency-key на webhook → повторный webhook не дублирует списание/продление.
 - [ ] Подпись webhook провайдера проверяется.
@@ -154,18 +168,21 @@ packages/*/
 - [ ] **Уникальность** `providerSubId`/`providerCustomerId` (constraint violation при дубле).
 
 ### Аутентификация и права
+
 - [ ] Защищённый маршрут недоступен без сессии.
 - [ ] Cross-tenant доступ к чужому `instanceId`/`contactId`/`leadId` блокируется.
 - [ ] Роль (owner/admin/manager) даёт ровно свои права.
 - [ ] Просроченная подписка (`expirationDate < now`) ограничивает доступ.
 
 ### Внешние интеграции
+
 - [ ] Временный сбой внешнего API → retry → успех.
 - [ ] Перманентная ошибка внешнего API → аккуратная обработка, видимость пользователю, no silent loss.
 - [ ] Версия API зафиксирована, изменение зафиксировано в контракте.
 - [ ] Секреты берутся из env, не хардкодятся.
 
 ### ИИ-агенты
+
 - [ ] LLM-ответ валидируется zod-схемой; невалидный → re-prompt → fallback.
 - [ ] Cost guard: превышение лимита токенов/вызовов на tenant → stop.
 - [ ] PII/секреты не попадают в prompt.
@@ -197,12 +214,16 @@ pnpm test:e2e          # всё зелёно (критичные потоки)
 pnpm build             # 0 ошибок
 ```
 
-Пороги покрытия (рекомендация, пересматривается):
-- `packages/shared`: ≥ 90 % строк.
-- `packages/queue`: ≥ 85 %.
-- `packages/wa` (sender/validator/session): ≥ 80 %.
+Пороги покрытия (исполняются Vitest и валят `pnpm test:cov` при регрессии):
+
+- `packages/shared`: statements/lines/functions ≥ 90 %, branches ≥ 85 %.
+- `packages/queue`: statements/lines/functions/branches ≥ 90 %.
+- `packages/wa` (sender/validator/session): statements/lines/functions ≥ 90 %, branches ≥ 80 %.
+- `apps/web`: statements/lines ≥ 50 %, functions ≥ 80 %, branches ≥ 70 %.
+- `apps/worker`: statements/lines/functions ≥ 90 %, branches ≥ 85 %.
 - `packages/ai`: ≥ 75 % (LLM-вызовы замоканы).
-- `apps/worker` (домен): ≥ 75 %.
+
+Worker integration specs выполняются без file-level parallelism: они совместно используют изолированные test-БД/test-Redis, а искусственная конкуренция файлов создаёт ложные lease timeout'ы и флап общего coverage-gate.
 
 Новый код без тестов для критичных зон (рассылки/биллинг/auth/интеграции/ИИ) не принимается.
 
@@ -237,29 +258,30 @@ pnpm build             # 0 ошибок
 
 Эти ошибки были в доноре. Тесты должны их ловить:
 
-| Антипаттерн донора | Тест-защита |
-|---|---|
-| `forEach(async)` без await → гонки | queue-тест с параллельными job'ами → детерминированный результат |
-| Прогресс рассылки только в RAM → потеря при рестарте | тест: kill воркера mid-broadcast → прогресс в БД → restart → продолжение без дублей |
-| `retry_onfail` пересоздаёт сокет, не повторяет отправку | тест: session_error на конкретном сообщении → retry → сообщение отправлено |
-| Нет глобального rate-limit → бан | тест: параллельные кампании на одном аккаунте → суммарная скорость ≤ лимита |
-| `logout()` на обычном reconnect → QR заново | тест: transient disconnect → reconnect без logout → креды сохранены |
-| QR пришёл для уже зарегистрированной сессии → креды удалены | `wa-session-registered-qr.spec.ts`: registered auth-state сохраняется, QR не превращается в logout |
-| Токен в query → утечка в логи | ревью + lint-правило: никаких секретов в URL-параметрах |
-| SQL-интерполяция → injection | запрет raw `$queryRawUnsafe` без review; только parameterized |
-| `Bad MAC` от рассинхрона auth-state | тест: auth-state в Redis переживает рестарт воркера |
-| Несколько воркеров открывают сокет на один `instanceId` → «conflict: replaced» | `broadcast-single-ownership.spec.ts`: сокет открывает только процесс-владелец по реестру |
-| Бан номера бесконечно реконнектится | `broadcast-banned-account.spec.ts`: `banned` терминален, авто-реконнекта нет |
-| Временная блокировка трактуется как перманентный бан | `broadcast-restricted-account.spec.ts`: `restricted` → пауза → восстановление |
-| `COUNT(*)` по растущей `MessageLog` в UI → деградация | `broadcast-stats-not-messageLog.spec.ts`: агрегаты только из `Stats` |
+| Антипаттерн донора                                                             | Тест-защита                                                                                                                   |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `forEach(async)` без await → гонки                                             | queue-тест с параллельными job'ами → детерминированный результат                                                              |
+| Прогресс рассылки только в RAM → потеря при рестарте                           | тест: kill воркера mid-broadcast → прогресс в БД → restart → продолжение без дублей                                           |
+| `retry_onfail` пересоздаёт сокет, не повторяет отправку                        | тест: session_error на конкретном сообщении → retry → сообщение отправлено                                                    |
+| Нет глобального rate-limit → бан                                               | тест: параллельные кампании на одном аккаунте → суммарная скорость ≤ лимита                                                   |
+| `logout()` на обычном reconnect → QR заново                                    | тест: transient disconnect → reconnect без logout → креды сохранены                                                           |
+| QR пришёл для уже зарегистрированной сессии → креды удалены                    | `wa-session-registered-qr.spec.ts`: registered auth-state сохраняется, QR не превращается в logout                            |
+| Токен в query → утечка в логи                                                  | ревью + lint-правило: никаких секретов в URL-параметрах                                                                       |
+| SQL-интерполяция → injection                                                   | запрет raw `$queryRawUnsafe` без review; только parameterized                                                                 |
+| `Bad MAC` от рассинхрона auth-state                                            | тест: auth-state в Redis переживает рестарт воркера                                                                           |
+| Несколько воркеров открывают сокет на один `instanceId` → «conflict: replaced» | `broadcast-single-ownership.spec.ts`: сокет открывает только процесс-владелец по реестру                                      |
+| Бан номера бесконечно реконнектится                                            | `broadcast-banned-account.spec.ts`: `banned` терминален, авто-реконнекта нет                                                  |
+| Временная блокировка трактуется как перманентный бан                           | `broadcast-restricted-account.spec.ts`: `restricted` → пауза → восстановление                                                 |
+| `COUNT(*)` по растущей `MessageLog` в UI → деградация                          | `broadcast-stats-not-messageLog.spec.ts`: агрегаты только из `Stats`                                                          |
 | Рекуррентный webhook платёжного провайдера без `teamId` → silent loss биллинга | `subscription-webhook-team-mapping.spec.ts`: маппинг через `providerSubId` (`@unique`); Checkout обязан проставить `metadata` |
-| Long-lead App Review забыли до Фазы 5 → простой | отдельный «Long-lead items» трек в `ROADMAP.md`, стартует при старте проекта |
+| Long-lead App Review забыли до Фазы 5 → простой                                | отдельный «Long-lead items» трек в `ROADMAP.md`, стартует при старте проекта                                                  |
 
 ---
 
 ## 12. Определение «тесты готовы»
 
 Тест-покрытие фичи считается готовым, когда:
+
 1. Каждое публичное поведение модуля покрыто хотя бы одним тестом «счастливого пути» и тестами на граничные/ошибочные случаи для критичных зон.
 2. Все контракты с другими пакетами/внешними сервисами зафиксированы контрактными тестами.
 3. Критичные пользовательские потоки имеют E2E.

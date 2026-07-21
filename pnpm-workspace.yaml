@@ -29,6 +29,8 @@ onlyBuiltDependencies:
 
 overrides:
   ioredis: 5.11.1
+  postcss: 8.5.10
+  qs: 6.15.2
 
 packageExtensions:
   '@whiskeysockets/baileys@7.0.0-rc13':

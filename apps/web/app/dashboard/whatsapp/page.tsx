@@ -11,15 +11,18 @@ import {
   validateWhatsappContactAction,
 } from '../../actions/whatsapp'
 import { getSession } from '../../lib/auth'
+import { normalizeSingleSearchParam, type SearchParamValue } from '../../lib/search-param'
 import { isConfirmedWhatsappContact } from '../../lib/whatsapp-policy'
 import { WhatsappLiveRefresh } from './whatsapp-live-refresh'
 import { WhatsappQrCode } from './whatsapp-qr-code'
 
 type WhatsappPageProps = {
-  searchParams?: { error?: string }
+  searchParams?: Promise<{ error?: SearchParamValue }>
 }
 
 export default async function WhatsappPage({ searchParams }: WhatsappPageProps) {
+  const resolvedSearchParams = await searchParams
+  const errorMessage = normalizeSingleSearchParam(resolvedSearchParams?.error)
   const session = await getSession()
   if (!session) redirect('/login')
 
@@ -61,9 +64,9 @@ export default async function WhatsappPage({ searchParams }: WhatsappPageProps) 
         </a>
       </header>
 
-      {searchParams?.error ? (
+      {errorMessage ? (
         <p className="error-message" role="alert">
-          {searchParams.error}
+          {errorMessage}
         </p>
       ) : null}
 

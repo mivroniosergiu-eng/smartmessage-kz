@@ -44,4 +44,36 @@ describe('middleware session guard', () => {
     expect(response.status).toBe(307)
     expect(response.headers.get('location')).toBe('http://localhost/dashboard')
   })
+
+  it('accepts valid UTF-8 session claims', async () => {
+    const token = encryptSession({
+      userId: 'user-utf8',
+      email: 'müller@example.com',
+      teamId: 'team-1',
+      role: 'OWNER',
+    })
+
+    const response = await middleware(request('/dashboard', token))
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('location')).toBeNull()
+  })
+
+  it('rejects an otherwise valid signed session after its expiry', async () => {
+    const token = encryptSession(
+      {
+        userId: 'user-1',
+        email: 'owner@example.com',
+        teamId: 'team-1',
+        role: 'OWNER',
+      },
+      { nowMs: Date.now() - 61_000, ttlSeconds: 60 },
+    )
+
+    const response = await middleware(request('/dashboard/whatsapp', token))
+
+    expect(response.status).toBe(307)
+    expect(response.headers.get('location')).toBe('http://localhost/login?invalidSession=1')
+    expect(response.cookies.get('session')?.value).toBe('')
+  })
 })
