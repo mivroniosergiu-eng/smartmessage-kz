@@ -6,6 +6,7 @@ import type { Prisma } from '@smartmessage/db'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { hashPassword, verifyPassword, encryptSession } from '../lib/auth'
+import { SESSION_TTL_SECONDS } from '../lib/session'
 
 const INVALID_EMAIL_MESSAGE = 'Некорректный формат email'
 const DUPLICATE_EMAIL_ERROR = 'Пользователь с таким email уже зарегистрирован'
@@ -27,7 +28,10 @@ export type FormState = {
   success?: boolean
 } | null
 
-export async function registerAction(_prevState: FormState, formData: FormData): Promise<FormState> {
+export async function registerAction(
+  _prevState: FormState,
+  formData: FormData,
+): Promise<FormState> {
   const email = formData.get('email') as string
   const password = formData.get('password') as string
   const teamName = formData.get('teamName') as string
@@ -109,12 +113,13 @@ export async function registerAction(_prevState: FormState, formData: FormData):
       role: user.role,
     })
 
-    cookies().set('session', sessionToken, {
+    const cookieStore = await cookies()
+    cookieStore.set('session', sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 7,
+      maxAge: SESSION_TTL_SECONDS,
     })
   } catch (error) {
     if (isUniqueConstraintError(error)) {
@@ -153,12 +158,13 @@ export async function loginAction(_prevState: FormState, formData: FormData): Pr
       role: user.role,
     })
 
-    cookies().set('session', sessionToken, {
+    const cookieStore = await cookies()
+    cookieStore.set('session', sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 7,
+      maxAge: SESSION_TTL_SECONDS,
     })
   } catch (error) {
     console.error('Login error:', error)
@@ -169,7 +175,8 @@ export async function loginAction(_prevState: FormState, formData: FormData): Pr
 }
 
 export async function logoutAction(): Promise<void> {
-  cookies().delete('session')
+  const cookieStore = await cookies()
+  cookieStore.delete('session')
   redirect('/login')
 }
 

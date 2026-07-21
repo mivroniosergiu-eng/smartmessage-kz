@@ -1,6 +1,14 @@
 import crypto from 'crypto'
 import { cookies } from 'next/headers'
 import { getSessionSecret } from './session-secret'
+import {
+  createSessionClaims,
+  parseActiveSession,
+  type SessionCodecOptions,
+  type SessionData,
+} from './session'
+
+export type { SessionData } from './session'
 
 const PASSWORD_ALGORITHM = 'pbkdf2'
 const PASSWORD_DIGEST = 'sha512'
@@ -27,13 +35,25 @@ export function verifyPassword(password: string, stored: string): boolean {
   if (parts.length === 5) {
     const [algorithm, digest, iterationsValue, salt, hash] = parts
     const iterations = Number(iterationsValue)
-    if (algorithm !== PASSWORD_ALGORITHM || digest !== PASSWORD_DIGEST || !Number.isInteger(iterations)) return false
+    if (
+      algorithm !== PASSWORD_ALGORITHM ||
+      digest !== PASSWORD_DIGEST ||
+      !Number.isInteger(iterations)
+    )
+      return false
     return verifyDerivedKey(password, salt, iterations, PASSWORD_KEY_LENGTH, digest, hash)
   }
 
   if (parts.length === 2) {
     const [salt, hash] = parts
-    return verifyDerivedKey(password, salt, LEGACY_PASSWORD_ITERATIONS, PASSWORD_KEY_LENGTH, PASSWORD_DIGEST, hash)
+    return verifyDerivedKey(
+      password,
+      salt,
+      LEGACY_PASSWORD_ITERATIONS,
+      PASSWORD_KEY_LENGTH,
+      PASSWORD_DIGEST,
+      hash,
+    )
   }
 
   return false
@@ -42,8 +62,8 @@ export function verifyPassword(password: string, stored: string): boolean {
 /**
  * Кодирует и подписывает объект сессии в строку.
  */
-export function encryptSession(payload: Record<string, any>): string {
-  const data = JSON.stringify(payload)
+export function encryptSession(payload: SessionData, options: SessionCodecOptions = {}): string {
+  const data = JSON.stringify(createSessionClaims(payload, options))
   const hmac = crypto.createHmac('sha256', getSessionSecret()).update(data).digest('hex')
   return Buffer.from(data).toString('base64') + '.' + hmac
 }
@@ -51,35 +71,37 @@ export function encryptSession(payload: Record<string, any>): string {
 /**
  * Декодирует строку сессии и проверяет подпись HMAC.
  */
-export function decryptSession(token: string): Record<string, any> | null {
+export function decryptSession(
+  token: string,
+  options: Pick<SessionCodecOptions, 'nowMs'> = {},
+): SessionData | null {
   try {
     const parts = token.split('.')
     if (parts.length !== 2) return null
     const [dataBase64, hmac] = parts
     const data = Buffer.from(dataBase64, 'base64').toString('utf-8')
     const checkHmac = crypto.createHmac('sha256', getSessionSecret()).update(data).digest('hex')
-    if (checkHmac !== hmac) return null
-    return JSON.parse(data)
+    if (!safeHexEqual(checkHmac, hmac)) return null
+    return parseActiveSession(JSON.parse(data), options.nowMs)
   } catch {
     return null
   }
-}
-
-export interface SessionData {
-  userId: string
-  email: string
-  teamId: string
-  role: string
 }
 
 /**
  * Возвращает данные текущей сессии из кук.
  */
 export async function getSession(): Promise<SessionData | null> {
-  const cookieStore = cookies()
+  const cookieStore = await cookies()
   const sessionCookie = cookieStore.get('session')
   if (!sessionCookie) return null
-  return decryptSession(sessionCookie.value) as SessionData | null
+  return decryptSession(sessionCookie.value)
+}
+
+function safeHexEqual(actualHex: string, expectedHex: string): boolean {
+  const actual = Buffer.from(actualHex, 'hex')
+  const expected = Buffer.from(expectedHex, 'hex')
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected)
 }
 
 function verifyDerivedKey(
@@ -91,7 +113,9 @@ function verifyDerivedKey(
   expectedHash: string,
 ): boolean {
   try {
-    const verifyHash = crypto.pbkdf2Sync(password, salt, iterations, keyLength, digest).toString('hex')
+    const verifyHash = crypto
+      .pbkdf2Sync(password, salt, iterations, keyLength, digest)
+      .toString('hex')
     const expected = Buffer.from(expectedHash, 'hex')
     const actual = Buffer.from(verifyHash, 'hex')
     return expected.length === actual.length && crypto.timingSafeEqual(expected, actual)

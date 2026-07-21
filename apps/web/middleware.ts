@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { getSessionSecret } from './app/lib/session-secret'
+import { parseActiveSession } from './app/lib/session'
 
 const INVALID_SESSION_PARAM = 'invalidSession'
 
@@ -44,13 +45,20 @@ async function isValidSessionToken(token: string): Promise<boolean> {
     const [dataBase64, hmac] = parts
     const data = atob(dataBase64)
     const checkHmac = await signSessionData(data)
-    if (checkHmac !== hmac) return false
-
-    JSON.parse(data)
-    return true
+    if (!constantTimeHexEqual(checkHmac, hmac)) return false
+    return parseActiveSession(JSON.parse(data)) !== null
   } catch {
     return false
   }
+}
+
+function constantTimeHexEqual(actual: string, expected: string): boolean {
+  if (actual.length !== expected.length) return false
+  let difference = 0
+  for (let index = 0; index < actual.length; index += 1) {
+    difference |= actual.charCodeAt(index) ^ expected.charCodeAt(index)
+  }
+  return difference === 0
 }
 
 async function signSessionData(data: string): Promise<string> {
@@ -63,5 +71,7 @@ async function signSessionData(data: string): Promise<string> {
     ['sign'],
   )
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(data))
-  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join(
+    '',
+  )
 }

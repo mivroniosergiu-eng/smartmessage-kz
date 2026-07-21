@@ -12,6 +12,7 @@ export default defineConfig({
       provider: 'v8',
       include: ['app/**/*.{ts,tsx}', 'middleware.ts'],
       exclude: ['**/*.spec.{ts,tsx}', '**/*.test.{ts,tsx}', 'app/layout.tsx'],
+      thresholds: { lines: 50, functions: 80, branches: 70, statements: 50 },
     },
   },
 })
