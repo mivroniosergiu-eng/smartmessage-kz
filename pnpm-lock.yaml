@@ -11,7 +11,7 @@ packageExtensionsChecksum: sha256-lICXLSsis3KUeSOKAcKxjvzzSW5WP9wc/ACFm6PuIc0=
 
 patchedDependencies:
   libsignal@6.0.0:
-    hash: a043cbe7959252f85f20d27d65bd9e82701b4a87c2981812c4f73ab6eafa6e68
+    hash: 996abfd4e45da6c34246b98c555fcd5d4d4882205b40bb425129cf26ba813aba
     path: patches/libsignal@6.0.0.patch
 
 importers:
@@ -5597,7 +5597,7 @@ snapshots:
       '@cacheable/node-cache': 1.7.6
       '@hapi/boom': 9.1.4
       async-mutex: 0.5.0
-      libsignal: 6.0.0(patch_hash=a043cbe7959252f85f20d27d65bd9e82701b4a87c2981812c4f73ab6eafa6e68)
+      libsignal: 6.0.0(patch_hash=996abfd4e45da6c34246b98c555fcd5d4d4882205b40bb425129cf26ba813aba)
       lru-cache: 11.5.2
       music-metadata: 11.14.0
       p-queue: 9.3.1
@@ -7362,7 +7362,7 @@ snapshots:
       prelude-ls: 1.2.1
       type-check: 0.4.0
 
-  libsignal@6.0.0(patch_hash=a043cbe7959252f85f20d27d65bd9e82701b4a87c2981812c4f73ab6eafa6e68):
+  libsignal@6.0.0(patch_hash=996abfd4e45da6c34246b98c555fcd5d4d4882205b40bb425129cf26ba813aba):
     dependencies:
       curve25519-js: 0.0.4
       protobufjs: 7.6.5
